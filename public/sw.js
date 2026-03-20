@@ -1,11 +1,8 @@
 const CACHE_NAME = "kelivo-chat-v1";
-const ASSETS = [
-  "/",
-  "/index.html",
-  "/manifest.json",
-  "/assets/icon-192.svg",
-  "/assets/icon-512.svg"
-];
+const BASE = self.registration ? self.registration.scope : "/";
+const ASSETS = ["", "index.html", "manifest.json", "assets/icon-192.svg", "assets/icon-512.svg"].map(
+  (path) => new URL(path, BASE).toString()
+);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
