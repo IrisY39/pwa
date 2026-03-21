@@ -1,5 +1,17 @@
 ﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowBigLeft, History, MessageCirclePlus, Search } from "lucide-react";
+import {
+  ArrowBigLeft,
+  History,
+  MessageCirclePlus,
+  Search,
+  ChevronsDown,
+  MoreHorizontal,
+  RefreshCw,
+  Copy,
+  SquarePen,
+  Trash2,
+  ChevronDown
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -429,6 +441,7 @@ function ChatPage() {
   const [editingText, setEditingText] = useState("");
   const [editSheetOpen, setEditSheetOpen] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState(null);
+  const [actionOpenId, setActionOpenId] = useState(null);
   const [toast, setToast] = useState("");
   const toastTimerRef = useRef(null);
   const [chatReady, setChatReady] = useState(false);
@@ -546,7 +559,8 @@ function ChatPage() {
         container.scrollHeight - container.scrollTop - container.clientHeight;
       const atBottom = distance < 8;
       atBottomRef.current = atBottom;
-      setShowBackBottom(!atBottom);
+      const showThreshold = container.clientHeight;
+      setShowBackBottom(distance > showThreshold);
     };
     onScroll();
     container.addEventListener("scroll", onScroll, { passive: true });
@@ -620,6 +634,19 @@ function ChatPage() {
     window.addEventListener("click", onClick);
     return () => window.removeEventListener("click", onClick);
   }, [modelMenuOpen]);
+
+  useEffect(() => {
+    if (!actionOpenId) return;
+    const handleClick = (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(".action-pop")) {
+        return;
+      }
+      setActionOpenId(null);
+    };
+    window.addEventListener("click", handleClick);
+    return () => window.removeEventListener("click", handleClick);
+  }, [actionOpenId]);
 
   useEffect(() => {
     if (!currentSessionId) return;
@@ -1033,52 +1060,81 @@ function ChatPage() {
           )}
           {baseText && (
             <div className="msg-content msg-markdown">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  table: ({ node, ...props }) => (
+                    <div className="md-table">
+                      <table {...props} />
+                    </div>
+                  )
+                }}
+              >
                 {baseText}
               </ReactMarkdown>
             </div>
           )}
         </div>
         <div className="chat-footer">
-          <div className="msg-actions">
+          <div
+            className={`action-pop ${position === "right" ? "is-right" : "is-left"}`}
+          >
             <button
-              className="msg-icon"
-              onClick={() => handleAction(message, "copy")}
+              type="button"
+              className="btn btn-ghost btn-xs msg-ellipsis-btn"
+              onClick={() =>
+                setActionOpenId((prev) => (prev === message._id ? null : message._id))
+              }
             >
-              复制
+              <MoreHorizontal className="h-4 w-4" />
             </button>
-            {position !== "right" && (
-              <button
-                className="msg-icon"
-                onClick={() => handleAction(message, "refresh")}
-              >
-                刷新
-              </button>
-            )}
-            <button
-              className="msg-icon"
-              onClick={() => handleAction(message, "edit")}
-            >
-              编辑
-            </button>
-            <button
-              className="msg-icon"
-              onClick={() => handleAction(message, "delete")}
-            >
-              删除
-            </button>
-            {variantCount > 1 && (
-              <button
-                className="msg-icon"
-                onClick={() =>
-                  switchVariant(
-                    message._id,
-                    (variantIndex + 1) % variantCount
-                  )
-                }
-              >
-                {variantLabel}
-              </button>
+            {actionOpenId === message._id && (
+              <div className="action-bar">
+                <button
+                  className="action-icon-btn"
+                  type="button"
+                  onClick={() => handleAction(message, "copy")}
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+                {position !== "right" && (
+                  <button
+                    className="action-icon-btn"
+                    type="button"
+                    onClick={() => handleAction(message, "refresh")}
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </button>
+                )}
+                <button
+                  className="action-icon-btn"
+                  type="button"
+                  onClick={() => handleAction(message, "edit")}
+                >
+                  <SquarePen className="h-4 w-4" />
+                </button>
+                <button
+                  className="action-icon-btn"
+                  type="button"
+                  onClick={() => handleAction(message, "delete")}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+                {variantCount > 1 && (
+                  <button
+                    className="action-icon-btn variant-label"
+                    type="button"
+                    onClick={() =>
+                      switchVariant(
+                        message._id,
+                        (variantIndex + 1) % variantCount
+                      )
+                    }
+                  >
+                    {variantLabel}
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -1115,99 +1171,79 @@ function ChatPage() {
 
   return (
     <div className="ChatPage">
-      <div className="navbar bg-base-100 shadow-sm">
+      <div
+        className="navbar bg-base-100 shadow-sm"
+        onClick={(event) => {
+          const target = event.target;
+          if (
+            target instanceof Element &&
+            target.closest(".navbar-center")
+          ) {
+            return;
+          }
+          scrollToTop();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            scrollToTop();
+          }
+        }}
+      >
         <div className="navbar-start">
-          <div className="dropdown">
-            <div
-              tabIndex={0}
-              role="button"
-              className="btn btn-ghost btn-circle"
-              aria-label="菜单"
-            >
-              <ArrowBigLeft className="h-5 w-5" />
-            </div>
-            <ul
-              tabIndex={-1}
-              className="menu menu-sm dropdown-content bg-base-100 rounded-box z-[50] mt-3 w-52 p-2 shadow"
-            >
-              <li>
-                <button
-                  type="button"
-                  onClick={() => (window.location.hash = "#/")}
-                >
-                  主页
-                </button>
-              </li>
-              <li>
-                <button
-                  type="button"
-                  onClick={() => (window.location.hash = "#/sessions")}
-                >
-                  会话
-                </button>
-              </li>
-              <li>
-                <button type="button" onClick={() => handleNewSession()}>
-                  新对话
-                </button>
-              </li>
-            </ul>
-          </div>
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle"
+            aria-label="返回"
+            onClick={() => (window.location.hash = "#/")}
+          >
+            <ArrowBigLeft className="h-5 w-5" />
+          </button>
         </div>
         <div className="navbar-center">
           <div className="navbar-title-stack">
-            <button
-              className="btn btn-ghost text-xl"
-              type="button"
-              onClick={(event) => {
-                const target = event.target;
-                if (
-                  target instanceof Element &&
-                  (target.closest(".model-toggle-btn") ||
-                    target.closest(".model-menu"))
-                ) {
-                  return;
-                }
-                scrollToTop();
-              }}
-            >
+            <div className="navbar-title-text">
               {assistantName || "Kelivo Chat"}
-            </button>
+            </div>
             <div className="dropdown dropdown-center">
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs chat-model-sub-btn"
-                onClick={() => setModelMenuOpen((v) => !v)}
+              <div
+                tabIndex={0}
+                role="button"
+                className="btn m-1 chat-model-sub-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setModelMenuOpen((v) => !v);
+                }}
               >
-                {chatModelId ? `当前模型：${chatModelId}` : "未选择聊天模型"}
-              </button>
-              {modelMenuOpen && (
-                <ul
-                  tabIndex={0}
-                  className="menu menu-sm dropdown-content bg-base-100 rounded-box z-[50] mt-2 w-56 p-2 shadow"
-                >
-                  {chatModels.length === 0 && (
-                    <li className="disabled">
-                      <a>暂无已添加模型</a>
-                    </li>
-                  )}
-                  {chatModels.map((m) => (
-                    <li key={m}>
-                      <button
-                        type="button"
-                        className={chatModelId === m ? "active" : ""}
-                        onClick={() => {
-                          setChatModelId(m);
-                          writeSetting("api_model", m);
-                          setModelMenuOpen(false);
-                        }}
-                      >
-                        {m}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+                <span className="chat-model-label">
+                  {chatModelId || "未选择聊天模型"}
+                </span>
+                <ChevronDown className="h-3 w-3 chat-model-caret" />
+              </div>
+              <ul
+                tabIndex={-1}
+                className="dropdown-content menu bg-base-100 rounded-box z-[50] mt-2 w-56 p-2 shadow-sm"
+              >
+                {chatModels.length === 0 && (
+                  <li className="disabled">
+                    <a>暂无已添加模型</a>
+                  </li>
+                )}
+                {chatModels.map((m) => (
+                  <li key={m}>
+                    <button
+                      type="button"
+                      className={chatModelId === m ? "active" : ""}
+                      onClick={() => {
+                        setChatModelId(m);
+                        writeSetting("api_model", m);
+                      }}
+                    >
+                      {m}
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
           </div>
         </div>
@@ -1238,39 +1274,56 @@ function ChatPage() {
         </div>
       </div>
       <div className="composer-bar">
-        <textarea
-          ref={inputRef}
-          className="textarea textarea-bordered w-full composer-input"
-          placeholder="输入消息..."
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              if (!isGenerating) {
-                handleSend();
+        <div className="composer-input-wrap">
+          <textarea
+            ref={inputRef}
+            className="composer-input custom-input"
+            placeholder="输入消息..."
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (!isGenerating) {
+                  handleSend();
+                }
               }
-            }
-          }}
-          rows={1}
-          disabled={isGenerating}
-        />
-        <button
-          className={`btn ${isGenerating ? "btn-error" : "btn-primary"}`}
-          type="button"
-          onClick={isGenerating ? handleStopGenerate : handleSend}
-          disabled={!isGenerating && !inputValue.trim()}
-        >
-          {isGenerating ? "停止" : "发送"}
-        </button>
+            }}
+            rows={1}
+            disabled={isGenerating}
+          />
+          <button
+            className={`composer-send-btn ${
+              isGenerating || inputValue.trim() ? "is-ready" : ""
+            }`}
+            type="button"
+            onClick={isGenerating ? handleStopGenerate : handleSend}
+            disabled={!isGenerating && !inputValue.trim()}
+            aria-label={isGenerating ? "停止生成" : "发送"}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="18"
+              height="18"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M22 2L11 13" />
+              <path d="M22 2L15 22L11 13L2 9L22 2Z" />
+            </svg>
+          </button>
+        </div>
       </div>
       {showBackBottom && (
         <button
-          className="back-bottom-custom"
+          className="btn btn-circle back-bottom-custom"
           type="button"
           onClick={() => triggerAutoScroll(true)}
         >
-          返回底部
+          <ChevronsDown className="h-5 w-5" />
         </button>
       )}
       {editSheetOpen && (
