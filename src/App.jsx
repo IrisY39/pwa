@@ -181,6 +181,12 @@ const readSessions = () => {
   }
 };
 
+const cloneSessions = (list) =>
+  (Array.isArray(list) ? list : []).map((s) => ({
+    ...s,
+    messages: cloneMessages(s.messages || [])
+  }));
+
 const writeSessions = (sessions) => {
   try {
     localStorage.setItem(SESSION_KEY, JSON.stringify(sessions));
@@ -651,11 +657,12 @@ function ChatPage() {
   useEffect(() => {
     if (!currentSessionId) return;
     const storedSessions = readSessions();
-    if (storedSessions.length) {
-      setSessions(storedSessions);
+    const safeSessions = cloneSessions(storedSessions);
+    if (safeSessions.length) {
+      setSessions(safeSessions);
     }
     const session =
-      storedSessions.find((s) => s.id === currentSessionId) ||
+      safeSessions.find((s) => s.id === currentSessionId) ||
       sessions.find((s) => s.id === currentSessionId);
     if (session?.messages) {
       suppressSaveRef.current = true;
@@ -675,6 +682,8 @@ function ChatPage() {
       (m) => m.position === "right" && m?.content?.text
     );
     const baseSessions = sessionsRef.current || [];
+    const targetIndex = baseSessions.findIndex((s) => s.id === currentSessionId);
+    if (targetIndex < 0) return;
     const next = baseSessions.map((s) => {
       if (s.id !== currentSessionId) return s;
       const title =
@@ -700,7 +709,7 @@ function ChatPage() {
       messages: cloneMessages(initialMessages),
       updatedAt: Date.now()
     };
-    const updated = [next, ...sessions];
+    const updated = [next, ...(sessionsRef.current || [])];
     setSessions(updated);
     writeSessions(updated);
     notifySessionsUpdate();
@@ -1172,12 +1181,14 @@ function ChatPage() {
   return (
     <div className="ChatPage">
       <div
-        className="navbar bg-base-100 shadow-sm"
+        className="navbar bg-base-100 shadow-sm app-navbar"
         onClick={(event) => {
           const target = event.target;
           if (
             target instanceof Element &&
-            target.closest(".navbar-center")
+            target.closest(
+              "button,a,input,select,textarea,.dropdown-content,.chat-model-sub-btn"
+            )
           ) {
             return;
           }
@@ -2304,24 +2315,37 @@ function SessionsPage() {
   });
 
   return (
-    <div className="page-shell">
-      <header className="page-header page-header-center">
-        <a className="page-link page-link-back" href="#/chat">
-          ← 返回
-        </a>
-        <div className="page-title">会话</div>
-      </header>
-      <div className="page-card">
-        <div className="page-card-title">全部对话</div>
-        <div className="session-search">
-          <Search className="session-search-icon" />
+    <div className="sessions-shell">
+      <div className="navbar bg-base-100 shadow-sm app-navbar">
+        <div className="navbar-start">
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle"
+            aria-label="返回"
+            onClick={() => (window.location.hash = "#/chat")}
+          >
+            <ArrowBigLeft className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="navbar-center">
+          <div className="navbar-title-stack">
+            <div className="navbar-title-text">管理历史对话</div>
+          </div>
+        </div>
+        <div className="navbar-end" />
+      </div>
+      <div className="page-shell">
+      <div className="page-card session-card">
+        <label className="input session-search-input">
+          <Search className="h-[1em] session-search-ico" />
           <input
-            className="form-input form-input-ghost"
+            type="search"
+            className="grow"
             placeholder="搜索聊天记录"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-        </div>
+        </label>
         <div className="session-list">
           {filteredSessions
             .slice()
@@ -2364,6 +2388,7 @@ function SessionsPage() {
             <div className="page-card-desc">暂无会话</div>
           )}
         </div>
+      </div>
       </div>
       {menuSessionId && !showRename && (
         <div
@@ -2460,15 +2485,6 @@ export default function App() {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
 
 
 
