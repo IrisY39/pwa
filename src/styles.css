@@ -1398,8 +1398,7 @@ select.form-input {
   border: 1px solid rgba(0, 0, 0, 0.12);
   background: #f8fafc;
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+  bottom: 0;
   z-index: 5;
   transition: none;
   will-change: transform, opacity;
