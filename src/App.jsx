@@ -10,7 +10,9 @@ import {
   Copy,
   SquarePen,
   Trash2,
-  ChevronDown
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -384,6 +386,56 @@ function ChatPage() {
     };
   };
 
+  const applyAssistantUpdate = ({
+    id,
+    text,
+    tokens,
+    isPending,
+    appendVariant,
+    createdAt
+  }) => {
+    const baseMsg = messagesRef.current.find((m) => m._id === id);
+    if (!baseMsg) {
+      updateMsg(id, {
+        content: { text },
+        tokens,
+        isPending: !!isPending
+      });
+      return;
+    }
+    if (!appendVariant || isPending) {
+      updateMsg(id, {
+        ...baseMsg,
+        content: { text },
+        tokens,
+        isPending: !!isPending
+      });
+      return;
+    }
+    const normalized = normalizeMessageVariants(baseMsg);
+    const variants = normalized.variants || [];
+    const nextVariant = {
+      text,
+      createdAt: createdAt ?? Date.now(),
+      tokens
+    };
+    const last = variants[variants.length - 1];
+    const shouldReplaceLast =
+      normalized.isPending && typeof last?.text === "string" && last.text === "";
+    const nextVariants = shouldReplaceLast
+      ? [...variants.slice(0, -1), nextVariant]
+      : [...variants, nextVariant];
+    updateMsg(id, {
+      ...normalized,
+      variants: nextVariants,
+      variantIndex: nextVariants.length - 1,
+      content: { text },
+      tokens,
+      createdAt: nextVariant.createdAt,
+      isPending: false
+    });
+  };
+
   const switchVariant = (msgId, nextIndex) => {
     const list = messages;
     const targetIdx = list.findIndex((m) => m._id === msgId);
@@ -406,6 +458,7 @@ function ChatPage() {
             : updatedTarget.tokens
           : undefined
     };
+    suppressAutoScrollRef.current = true;
     resetList([...list.slice(0, targetIdx), nextTarget, ...thread]);
   };
 
@@ -457,6 +510,7 @@ function ChatPage() {
   const [thinkOpen, setThinkOpen] = useState({});
   const suppressSaveRef = useRef(false);
   const atBottomRef = useRef(true);
+  const suppressAutoScrollRef = useRef(false);
   const [sessions, setSessions] = useState(() => {
     const existing = readSessions();
     if (existing.length) return existing;
@@ -550,6 +604,10 @@ function ChatPage() {
     if (!list || typeof MutationObserver === "undefined") return;
     const observer = new MutationObserver(() => {
       if (!window.location.hash.startsWith("#/chat")) return;
+      if (suppressAutoScrollRef.current) {
+        suppressAutoScrollRef.current = false;
+        return;
+      }
       triggerAutoScroll();
     });
     observer.observe(list, { childList: true, subtree: true });
@@ -744,11 +802,21 @@ function ChatPage() {
       const idx = messages.findIndex((m) => m._id === msg._id);
       if (idx < 0) return;
       const updatedTarget = storeTailOnVariant(messages, idx);
+      const pendingVariant = {
+        text: "",
+        createdAt: Date.now(),
+        tokens: updatedTarget.tokens
+      };
+      const nextVariants = [...(updatedTarget.variants || []), pendingVariant];
       const truncated = [
         ...messages.slice(0, idx),
         {
           ...updatedTarget,
-          content: { text: getMessageTextForHistory(updatedTarget) }
+          variants: nextVariants,
+          variantIndex: nextVariants.length - 1,
+          content: { text: "" },
+          isPending: true,
+          createdAt: pendingVariant.createdAt
         }
       ];
       resetList(truncated);
@@ -870,6 +938,12 @@ function ChatPage() {
       if (!pendingId) {
         appendMsg(pendingMsg);
         pendingId = pendingMsg._id;
+      } else {
+        updateMsg(pendingId, {
+          ...pendingMsg,
+          content: { text: pendingMsg?.content?.text ?? "" },
+          isPending: true
+        });
       }
 
       const reqLogId = crypto?.randomUUID?.() || String(Date.now());
@@ -901,10 +975,13 @@ function ChatPage() {
         });
         if (!res.ok) {
           showToast(`HTTP ${res.status}`);
-          updateMsg(pendingId, {
-            ...pendingMsg,
-            content: { text: rawText || `HTTP ${res.status}` },
-            isPending: false
+          applyAssistantUpdate({
+            id: pendingId,
+            text: rawText || `HTTP ${res.status}`,
+            tokens: pendingMsg.tokens,
+            isPending: false,
+            appendVariant: !!appendVariant,
+            createdAt: pendingCreatedAt
           });
           return;
         }
@@ -912,10 +989,13 @@ function ChatPage() {
         try {
           data = JSON.parse(rawText);
         } catch {
-          updateMsg(pendingId, {
-            ...pendingMsg,
-            content: { text: rawText },
-            isPending: false
+          applyAssistantUpdate({
+            id: pendingId,
+            text: rawText,
+            tokens: pendingMsg.tokens,
+            isPending: false,
+            appendVariant: !!appendVariant,
+            createdAt: pendingCreatedAt
           });
           return;
         }
@@ -926,14 +1006,17 @@ function ChatPage() {
           "";
         const usageTokens =
           data?.usage?.total_tokens ?? data?.usage?.totalTokens ?? data?.usage?.total;
-        updateMsg(pendingId, {
-          ...pendingMsg,
-          content: { text: content },
-          tokens:
-            typeof usageTokens === "number"
-              ? usageTokens
-              : estimateTokens(content),
-          isPending: false
+        const nextTokens =
+          typeof usageTokens === "number"
+            ? usageTokens
+            : estimateTokens(content);
+        applyAssistantUpdate({
+          id: pendingId,
+          text: content,
+          tokens: nextTokens,
+          isPending: false,
+          appendVariant: !!appendVariant,
+          createdAt: pendingCreatedAt
         });
         return;
       }
@@ -965,11 +1048,13 @@ function ChatPage() {
                 "";
               if (delta) {
                 fullText += delta;
-                updateMsg(pendingId, {
-                  ...pendingMsg,
-                  content: { text: fullText },
+                applyAssistantUpdate({
+                  id: pendingId,
+                  text: fullText,
                   tokens: estimateTokens(fullText),
-                  isPending: true
+                  isPending: true,
+                  appendVariant: false,
+                  createdAt: pendingCreatedAt
                 });
               }
             } catch {
@@ -979,11 +1064,13 @@ function ChatPage() {
         }
       }
 
-      updateMsg(pendingId, {
-        ...pendingMsg,
-        content: { text: fullText },
+      applyAssistantUpdate({
+        id: pendingId,
+        text: fullText,
         tokens: estimateTokens(fullText),
-        isPending: false
+        isPending: false,
+        appendVariant: !!appendVariant,
+        createdAt: pendingCreatedAt
       });
     } catch (err) {
       if (err?.name === "AbortError") {
@@ -1065,7 +1152,7 @@ function ChatPage() {
             </div>
           ))}
           {message.isPending && !baseText && (
-            <span className="loading loading-spinner loading-sm" />
+            <span className="loading loading-dots loading-sm" />
           )}
           {baseText && (
             <div className="msg-content msg-markdown">
@@ -1085,6 +1172,35 @@ function ChatPage() {
           )}
         </div>
         <div className="chat-footer">
+          {position === "right" && variantCount > 1 && (
+            <div className="variant-switch">
+              <button
+                type="button"
+                className="variant-btn"
+                onClick={() =>
+                  switchVariant(
+                    message._id,
+                    (variantIndex - 1 + variantCount) % variantCount
+                  )
+                }
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span className="variant-label-text">{variantLabel}</span>
+              <button
+                type="button"
+                className="variant-btn"
+                onClick={() =>
+                  switchVariant(
+                    message._id,
+                    (variantIndex + 1) % variantCount
+                  )
+                }
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          )}
           <div
             className={`action-pop ${position === "right" ? "is-right" : "is-left"}`}
           >
@@ -1129,23 +1245,38 @@ function ChatPage() {
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
-                {variantCount > 1 && (
-                  <button
-                    className="action-icon-btn variant-label"
-                    type="button"
-                    onClick={() =>
-                      switchVariant(
-                        message._id,
-                        (variantIndex + 1) % variantCount
-                      )
-                    }
-                  >
-                    {variantLabel}
-                  </button>
-                )}
               </div>
             )}
           </div>
+          {position !== "right" && variantCount > 1 && (
+            <div className="variant-switch">
+              <button
+                type="button"
+                className="variant-btn"
+                onClick={() =>
+                  switchVariant(
+                    message._id,
+                    (variantIndex - 1 + variantCount) % variantCount
+                  )
+                }
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span className="variant-label-text">{variantLabel}</span>
+              <button
+                type="button"
+                className="variant-btn"
+                onClick={() =>
+                  switchVariant(
+                    message._id,
+                    (variantIndex + 1) % variantCount
+                  )
+                }
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1285,6 +1416,85 @@ function ChatPage() {
         </div>
       </div>
       <div className="composer-bar">
+        <div className="fab composer-fab">
+          <div
+            tabIndex={0}
+            role="button"
+            className="btn btn-circle btn-secondary composer-fab-main"
+          >
+            <svg
+              aria-label="New"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="2"
+              stroke="currentColor"
+              className="size-5"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 4.5v15m7.5-7.5h-15"
+              />
+            </svg>
+          </div>
+          <button className="btn btn-circle composer-fab-item" type="button">
+            <svg
+              aria-label="Camera"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="1.5"
+              stroke="currentColor"
+              className="size-5"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z"
+              />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z"
+              />
+            </svg>
+          </button>
+          <button className="btn btn-circle composer-fab-item" type="button">
+            <svg
+              aria-label="Gallery"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="1.5"
+              stroke="currentColor"
+              className="size-5"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
+              />
+            </svg>
+          </button>
+          <button className="btn btn-circle composer-fab-item" type="button">
+            <svg
+              aria-label="Voice"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="1.5"
+              stroke="currentColor"
+              className="size-5"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z"
+              />
+            </svg>
+          </button>
+        </div>
         <div className="composer-input-wrap">
           <textarea
             ref={inputRef}
@@ -1387,9 +1597,21 @@ function ChatPage() {
                       variantIndex: nextVariants.length - 1,
                       content: { text: nextText }
                     };
+                    const nextAssistant = messages
+                      .slice(targetIndex + 1)
+                      .find((m) => m.position === "left");
+                    const placeholderAssistant = nextAssistant
+                      ? {
+                          ...nextAssistant,
+                          content: { text: "" },
+                          isPending: true,
+                          createdAt: Date.now()
+                        }
+                      : null;
                     const truncated = [
                       ...messages.slice(0, targetIndex),
-                      nextTarget
+                      nextTarget,
+                      ...(placeholderAssistant ? [placeholderAssistant] : [])
                     ];
                     resetList(truncated);
 
@@ -1398,15 +1620,18 @@ function ChatPage() {
                     );
                     historyList.push({ role: "user", content: nextText });
 
-                    const nextAssistant = messages
-                      .slice(targetIndex + 1)
-                      .find((m) => m.position === "left");
-
-                    sendChatRequest({
-                      historyList,
-                      targetMsgId: nextAssistant?._id,
-                      appendVariant: true
-                    });
+                    if (nextAssistant) {
+                      sendChatRequest({
+                        historyList,
+                        targetMsgId: nextAssistant._id,
+                        appendVariant: true
+                      });
+                    } else {
+                      sendChatRequest({
+                        historyList,
+                        appendVariant: false
+                      });
+                    }
                   } else {
                     const normalized = normalizeMessageVariants(target);
                     const variants = normalized.variants || [];
@@ -2303,16 +2528,68 @@ function SessionsPage() {
     setShowRename(false);
   };
 
-  const filteredSessions = sessions.filter((s) => {
-    if (!query.trim()) return true;
-    const q = query.trim().toLowerCase();
-    const title = (s.title || "").toLowerCase();
-    if (title.includes(q)) return true;
-    const msgs = Array.isArray(s.messages) ? s.messages : [];
-    return msgs.some((m) =>
-      (m?.content?.text || "").toLowerCase().includes(q)
-    );
-  });
+  const escapeRegExp = (value) =>
+    value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const highlightText = (text, keyword) => {
+    if (!keyword) return text;
+    const regex = new RegExp(`(${escapeRegExp(keyword)})`, "ig");
+    return String(text)
+      .split(regex)
+      .filter(Boolean)
+      .map((part, idx) =>
+        part.toLowerCase() === keyword.toLowerCase() ? (
+          <span className="match-highlight" key={`m-${idx}`}>
+            {part}
+          </span>
+        ) : (
+          <span key={`t-${idx}`}>{part}</span>
+        )
+      );
+  };
+
+  const buildPreview = (text, keyword) => {
+    if (!keyword || !text) return "";
+    const raw = String(text);
+    const lower = raw.toLowerCase();
+    const k = keyword.toLowerCase();
+    const idx = lower.indexOf(k);
+    if (idx === -1) return "";
+    const padding = 24;
+    const start = Math.max(0, idx - padding);
+    const end = Math.min(raw.length, idx + k.length + padding);
+    const snippet = raw.slice(start, end);
+    const prefix = start > 0 ? "…" : "";
+    const suffix = end < raw.length ? "…" : "";
+    return `${prefix}${snippet}${suffix}`;
+  };
+
+  const normalizedQuery = query.trim();
+  const qLower = normalizedQuery.toLowerCase();
+
+  const filteredSessions = sessions
+    .map((s) => {
+      if (!normalizedQuery) return { session: s, titleMatch: false, preview: "" };
+      const title = (s.title || "").toLowerCase();
+      const titleMatch = title.includes(qLower);
+      const msgs = Array.isArray(s.messages) ? s.messages : [];
+      let preview = "";
+      if (!titleMatch) {
+        for (const m of msgs) {
+          const text = m?.content?.text || "";
+          if (text.toLowerCase().includes(qLower)) {
+            preview = buildPreview(text, normalizedQuery);
+            break;
+          }
+        }
+      }
+      return { session: s, titleMatch, preview };
+    })
+    .filter((item) => {
+      if (!normalizedQuery) return true;
+      if (item.titleMatch) return true;
+      return Boolean(item.preview);
+    });
 
   return (
     <div className="sessions-shell">
@@ -2349,8 +2626,8 @@ function SessionsPage() {
         <div className="session-list">
           {filteredSessions
             .slice()
-            .sort((a, b) => b.updatedAt - a.updatedAt)
-            .map((s) => (
+            .sort((a, b) => b.session.updatedAt - a.session.updatedAt)
+            .map(({ session: s, titleMatch, preview }) => (
               <button
                 key={s.id}
                 className="session-item"
@@ -2381,7 +2658,16 @@ function SessionsPage() {
                 <div className="session-date">
                   {formatDateTime(s.updatedAt)}
                 </div>
-                <div className="session-title">{s.title || "新对话"}</div>
+                <div className="session-title">
+                  {titleMatch
+                    ? highlightText(s.title || "新对话", normalizedQuery)
+                    : s.title || "新对话"}
+                </div>
+                {preview && (
+                  <div className="session-preview">
+                    {highlightText(preview, normalizedQuery)}
+                  </div>
+                )}
               </button>
             ))}
           {filteredSessions.length === 0 && (
@@ -2485,11 +2771,3 @@ export default function App() {
     </div>
   );
 }
-
-
-
-
-
-
-
-
