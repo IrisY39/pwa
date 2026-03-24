@@ -12,7 +12,8 @@ import {
   Trash2,
   ChevronDown,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Pencil
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -938,12 +939,6 @@ function ChatPage() {
       if (!pendingId) {
         appendMsg(pendingMsg);
         pendingId = pendingMsg._id;
-      } else {
-        updateMsg(pendingId, {
-          ...pendingMsg,
-          content: { text: pendingMsg?.content?.text ?? "" },
-          isPending: true
-        });
       }
 
       const reqLogId = crypto?.randomUUID?.() || String(Date.now());
@@ -951,9 +946,7 @@ function ChatPage() {
         id: reqLogId,
         at: Date.now(),
         type: "request",
-        endpoint,
-        headers: apiKey ? { Authorization: "Bearer ***" } : {},
-        body
+        requestJson: JSON.stringify(body, null, 2)
       });
 
       const res = await fetch(endpoint, {
@@ -988,7 +981,15 @@ function ChatPage() {
         let data;
         try {
           data = JSON.parse(rawText);
+          updateRequestLog(reqLogId, {
+            responseJson: JSON.stringify(data, null, 2),
+            responseText: null
+          });
         } catch {
+          updateRequestLog(reqLogId, {
+            responseJson: null,
+            responseText: rawText
+          });
           applyAssistantUpdate({
             id: pendingId,
             text: rawText,
@@ -1064,6 +1065,11 @@ function ChatPage() {
         }
       }
 
+      updateRequestLog(reqLogId, {
+        responseAt: Date.now(),
+        responseStatus: res.status,
+        responseText: fullText
+      });
       applyAssistantUpdate({
         id: pendingId,
         text: fullText,
@@ -1680,27 +1686,29 @@ function ChatPage() {
           className="modal-backdrop"
           onClick={() => setDeleteTargetId(null)}
         >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-title">是否确认删除</div>
-            <div className="modal-actions">
-              <button
-                className="form-btn ghost"
-                type="button"
-                onClick={() => setDeleteTargetId(null)}
-              >
-                取消
-              </button>
-              <button
-                className="form-btn"
-                type="button"
-                onClick={() => {
-                  const next = messages.filter((m) => m._id !== deleteTargetId);
-                  resetList(next);
-                  setDeleteTargetId(null);
-                }}
-              >
-                确认
-              </button>
+          <div className="app-modal rename-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rename-content">
+              <div className="rename-title">是否确认删除</div>
+              <div className="modal-actions">
+                <button
+                  className="btn btn-outline btn-sm"
+                  type="button"
+                  onClick={() => setDeleteTargetId(null)}
+                >
+                  取消
+                </button>
+                <button
+                  className="btn btn-outline btn-sm"
+                  type="button"
+                  onClick={() => {
+                    const next = messages.filter((m) => m._id !== deleteTargetId);
+                    resetList(next);
+                    setDeleteTargetId(null);
+                  }}
+                >
+                  确认
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1887,13 +1895,25 @@ function ToolsPage() {
   };
 
   return (
-    <div className="page-shell">
-      <header className="page-header">
-        <div className="page-title">API 工具</div>
-        <a className="page-link" href="#/">
-          返回主页
-        </a>
-      </header>
+    <div className="page-shell tools-shell">
+      <div className="navbar bg-base-100 shadow-sm app-navbar">
+        <div className="navbar-start">
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle"
+            aria-label="返回"
+            onClick={() => (window.location.hash = "#/")}
+          >
+            <ArrowBigLeft className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="navbar-center">
+          <div className="navbar-title-stack">
+            <div className="navbar-title-text">API 工具</div>
+          </div>
+        </div>
+        <div className="navbar-end" />
+      </div>
       <div className="tab-bar">
         <button
           className={`tab-btn ${tab === "api" ? "active" : ""}`}
@@ -2058,13 +2078,7 @@ function ToolsPage() {
                     <span>{formatDateTime(log.at)}</span>
                     <span className="log-tag request">request</span>
                   </div>
-                  {log.endpoint && <div className="log-line">URL: {log.endpoint}</div>}
-                  {log.headers && (
-                    <pre className="log-pre">{JSON.stringify(log.headers, null, 2)}</pre>
-                  )}
-                  {log.body && (
-                    <pre className="log-pre">{JSON.stringify(log.body, null, 2)}</pre>
-                  )}
+                  {log.requestJson && <pre className="log-pre">{log.requestJson}</pre>}
                   {(log.responseStatus || log.responseError || log.responseText || log.responseJson) && (
                     <>
                       <div className="log-title">
@@ -2073,81 +2087,18 @@ function ToolsPage() {
                         </span>
                         <span className="log-tag response">response</span>
                       </div>
-                      {log.responseStatus && (
-                        <div className="log-line">Status: {log.responseStatus}</div>
-                      )}
-                      {log.responseContentType && (
-                        <div className="log-line">
-                          Content-Type: {log.responseContentType}
-                        </div>
-                      )}
-                      {log.responseError && (
-                        <div className="log-line log-error">{log.responseError}</div>
-                      )}
-                      {log.responseJson && (
-                        <pre className="log-pre">
-                          {JSON.stringify(log.responseJson, null, 2)}
-                        </pre>
-                      )}
-                      {log.responseText && !log.responseJson && (
-                        <pre className="log-pre">{String(log.responseText)}</pre>
+                      {log.responseJson ? (
+                        <pre className="log-pre">{log.responseJson}</pre>
+                      ) : (
+                        log.responseText && (
+                          <pre className="log-pre">{String(log.responseText)}</pre>
+                        )
                       )}
                     </>
                   )}
                 </div>
               ))}
             </div>
-          </div>
-          {logs.length === 0 && <div className="page-card-desc">暂无日志</div>}
-          <div className="log-list">
-            {logs.map((log) => (
-              <div className="log-item" key={log.id}>
-                <div className="log-title">
-                  <span>{formatDateTime(log.at)}</span>
-                  <span className={`log-tag ${log.type}`}>{log.type}</span>
-                </div>
-                {log.endpoint && <div className="log-line">URL: {log.endpoint}</div>}
-                {log.message && <div className="log-line">Message: {log.message}</div>}
-                {log.apiUrl !== undefined && (
-                  <div className="log-line">apiUrl: {String(log.apiUrl)}</div>
-                )}
-                {log.modelId !== undefined && (
-                  <div className="log-line">modelId: {String(log.modelId)}</div>
-                )}
-                {log.hasApiKey !== undefined && (
-                  <div className="log-line">hasApiKey: {String(log.hasApiKey)}</div>
-                )}
-                {log.useStream !== undefined && (
-                  <div className="log-line">useStream: {String(log.useStream)}</div>
-                )}
-                {log.type === "request" && log.body?.model && (
-                  <div className="log-line">Model: {log.body.model}</div>
-                )}
-                {log.type === "request" && Array.isArray(log.body?.messages) && (
-                  <div className="log-line">
-                    Messages: {log.body.messages.length}
-                  </div>
-                )}
-                {log.type === "request" && Array.isArray(log.body?.messages) && (
-                  <div className="log-line">
-                    Last User:{" "}
-                    {
-                      log.body.messages
-                        .filter((m) => m.role === "user")
-                        .slice(-1)[0]?.content
-                    }
-                  </div>
-                )}
-                {log.status && <div className="log-line">Status: {log.status}</div>}
-                {log.error && <div className="log-line log-error">{log.error}</div>}
-                {log.body && (
-                  <pre className="log-pre">{JSON.stringify(log.body, null, 2)}</pre>
-                )}
-                {log.text && (
-                  <pre className="log-pre">{String(log.text).slice(0, 2000)}</pre>
-                )}
-              </div>
-            ))}
           </div>
         </div>
       )}
@@ -2489,6 +2440,7 @@ function SessionsPage() {
   const [menuSessionId, setMenuSessionId] = useState(null);
   const [showRename, setShowRename] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [deleteSessionId, setDeleteSessionId] = useState(null);
   const [query, setQuery] = useState("");
   const pressTimerRef = useRef(null);
 
@@ -2514,6 +2466,7 @@ function SessionsPage() {
     }
     setMenuSessionId(null);
     setShowRename(false);
+    setDeleteSessionId(null);
   };
 
   const handleRename = () => {
@@ -2526,6 +2479,7 @@ function SessionsPage() {
     writeSessions(next);
     setMenuSessionId(null);
     setShowRename(false);
+    setDeleteSessionId(null);
   };
 
   const escapeRegExp = (value) =>
@@ -2591,6 +2545,22 @@ function SessionsPage() {
       return Boolean(item.preview);
     });
 
+  useEffect(() => {
+    if (!menuSessionId || showRename || deleteSessionId) return;
+    const onClick = (event) => {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        (target.closest(".session-dropdown") || target.closest(".session-item.is-active"))
+      ) {
+        return;
+      }
+      setMenuSessionId(null);
+    };
+    window.addEventListener("click", onClick);
+    return () => window.removeEventListener("click", onClick);
+  }, [menuSessionId, showRename, deleteSessionId]);
+
   return (
     <div className="sessions-shell">
       <div className="navbar bg-base-100 shadow-sm app-navbar">
@@ -2630,8 +2600,9 @@ function SessionsPage() {
             .map(({ session: s, titleMatch, preview }) => (
               <button
                 key={s.id}
-                className="session-item"
+                className={`session-item${menuSessionId === s.id ? " is-active" : ""}`}
                 onClick={() => {
+                  if (menuSessionId === s.id) return;
                   writeCurrentSessionId(s.id);
                   window.location.hash = "#/chat";
                 }}
@@ -2668,6 +2639,40 @@ function SessionsPage() {
                     {highlightText(preview, normalizedQuery)}
                   </div>
                 )}
+                {menuSessionId === s.id && !showRename && (
+                  <ul
+                    className="menu dropdown-content session-dropdown"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <li>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowRename(true);
+                          setDeleteSessionId(null);
+                        }}
+                      >
+                        <Pencil className="h-4 w-4" />
+                        <span className="session-menu-text">重命名</span>
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteSessionId(menuSessionId);
+                          setMenuSessionId(null);
+                          setShowRename(false);
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        <span className="session-menu-text">删除</span>
+                      </button>
+                    </li>
+                  </ul>
+                )}
               </button>
             ))}
           {filteredSessions.length === 0 && (
@@ -2676,36 +2681,6 @@ function SessionsPage() {
         </div>
       </div>
       </div>
-      {menuSessionId && !showRename && (
-        <div
-          className="sheet-backdrop"
-          onClick={() => setMenuSessionId(null)}
-        >
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <button
-              className="sheet-item"
-              type="button"
-              onClick={() => setShowRename(true)}
-            >
-              重命名
-            </button>
-            <button
-              className="sheet-item danger"
-              type="button"
-              onClick={() => handleDelete(menuSessionId)}
-            >
-              删除
-            </button>
-            <button
-              className="sheet-item ghost"
-              type="button"
-              onClick={() => setMenuSessionId(null)}
-            >
-              取消
-            </button>
-          </div>
-        </div>
-      )}
       {menuSessionId && showRename && (
         <div
           className="modal-backdrop"
@@ -2714,31 +2689,65 @@ function SessionsPage() {
             setMenuSessionId(null);
           }}
         >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-title">重命名聊天</div>
-            <input
-              className="form-input"
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-            />
-            <div className="modal-actions">
-              <button
-                className="form-btn ghost"
-                type="button"
-                onClick={() => {
-                  setShowRename(false);
-                  setMenuSessionId(null);
-                }}
-              >
-                取消
-              </button>
-              <button
-                className="form-btn"
-                type="button"
-                onClick={handleRename}
-              >
-                确认
-              </button>
+          <div className="app-modal rename-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rename-content">
+              <div className="rename-title">重命名聊天</div>
+              <input
+                type="text"
+                className="input rename-input"
+                placeholder="输入新的标题"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+              />
+              <div className="modal-actions">
+                <button
+                  className="btn btn-outline btn-sm"
+                  type="button"
+                  onClick={() => {
+                    setShowRename(false);
+                    setMenuSessionId(null);
+                  }}
+                >
+                  取消
+                </button>
+                <button
+                  className="btn btn-outline btn-sm"
+                  type="button"
+                  onClick={handleRename}
+                >
+                  确认
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {deleteSessionId && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            setDeleteSessionId(null);
+          }}
+        >
+          <div className="app-modal rename-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rename-content">
+              <div className="rename-title">确认删除该对话？</div>
+              <div className="modal-actions">
+                <button
+                  className="btn btn-outline btn-sm"
+                  type="button"
+                  onClick={() => setDeleteSessionId(null)}
+                >
+                  取消
+                </button>
+                <button
+                  className="btn btn-outline btn-sm"
+                  type="button"
+                  onClick={() => handleDelete(deleteSessionId)}
+                >
+                  确认
+                </button>
+              </div>
             </div>
           </div>
         </div>
