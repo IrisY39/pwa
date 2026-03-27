@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Pencil,
+  Check,
   Wrench,
   BookHeart,
   FileClock
@@ -160,7 +161,12 @@ const updateRequestLog = (id, patch) => {
       log.id === id ? { ...log, ...patch } : log
     );
     writeRequestLogs(next);
+    window.dispatchEvent(new Event("requestlogs:update"));
   } catch {}
+};
+
+const emitModelsUpdate = () => {
+  window.dispatchEvent(new Event("models:update"));
 };
 
 const appendLog = (entry) => {
@@ -173,6 +179,7 @@ const appendLog = (entry) => {
     reqLogs.unshift(entry);
     if (reqLogs.length > 3) reqLogs.length = 3;
     writeRequestLogs(reqLogs);
+    window.dispatchEvent(new Event("requestlogs:update"));
   }
 };
 
@@ -505,6 +512,8 @@ function ChatPage() {
   const [editSheetOpen, setEditSheetOpen] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState(null);
   const [actionOpenId, setActionOpenId] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+  const copyTimerRef = useRef(null);
   const [toast, setToast] = useState("");
   const toastTimerRef = useRef(null);
   const [chatReady, setChatReady] = useState(false);
@@ -691,6 +700,19 @@ function ChatPage() {
   }, []);
 
   useEffect(() => {
+    const onModelsUpdate = () => {
+      setChatModelId(readSetting("api_model"));
+      try {
+        setChatModels(JSON.parse(readSetting("opt_added_models", "[]")));
+      } catch {
+        setChatModels([]);
+      }
+    };
+    window.addEventListener("models:update", onModelsUpdate);
+    return () => window.removeEventListener("models:update", onModelsUpdate);
+  }, []);
+
+  useEffect(() => {
     const onClick = (event) => {
       if (!modelMenuOpen) return;
       const target = event.target;
@@ -715,6 +737,12 @@ function ChatPage() {
     window.addEventListener("click", handleClick);
     return () => window.removeEventListener("click", handleClick);
   }, [actionOpenId]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!currentSessionId) return;
@@ -787,8 +815,15 @@ function ChatPage() {
   const handleAction = (msg, action) => {
     const text = msg?.content?.text ?? "";
     if (action === "copy") {
-      navigator.clipboard?.writeText(text);
-      showToast("已复制到剪贴板");
+      const id = msg?._id || null;
+      if (id && copiedId !== id) {
+        setCopiedId(id);
+        if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = setTimeout(() => {
+          setCopiedId(null);
+        }, 1200);
+      }
+      navigator.clipboard?.writeText(text).catch(() => {});
       return;
     }
     if (action === "delete") {
@@ -994,8 +1029,7 @@ function ChatPage() {
         try {
           data = JSON.parse(rawText);
           updateRequestLog(reqLogId, {
-            responseJson: JSON.stringify(data, null, 2),
-            responseText: null
+            responseJson: JSON.stringify(data, null, 2)
           });
         } catch {
           updateRequestLog(reqLogId, {
@@ -1043,7 +1077,8 @@ function ChatPage() {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        const chunkText = decoder.decode(value, { stream: true });
+        buffer += chunkText;
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
         for (const line of lines) {
@@ -1080,7 +1115,8 @@ function ChatPage() {
       updateRequestLog(reqLogId, {
         responseAt: Date.now(),
         responseStatus: res.status,
-        responseText: fullText
+        responseText: fullText,
+        responseJson: null
       });
       applyAssistantUpdate({
         id: pendingId,
@@ -1104,7 +1140,8 @@ function ChatPage() {
 
   const renderMessageContent = (message) => {
     const { content, position, createdAt, tokens } = message;
-    const extracted = extractThinkAndTools(content?.text || "");
+    const rawText = content?.text || "";
+    const extracted = extractThinkAndTools(rawText);
     const baseText = extracted.cleanText;
     const thinkText = extracted.thinkText;
     const toolParts = extracted.tools;
@@ -1137,6 +1174,9 @@ function ChatPage() {
             position === "right" ? "chat-bubble-primary" : ""
           }`}
         >
+          {message.isPending && !baseText && (
+            <span className="loading loading-dots loading-sm" />
+          )}
           {thinkText && (
             <div className="think-card">
               <div className="think-header">
@@ -1169,9 +1209,6 @@ function ChatPage() {
               <pre className="tool-body">{t.content}</pre>
             </div>
           ))}
-          {message.isPending && !baseText && (
-            <span className="loading loading-dots loading-sm" />
-          )}
           {baseText && (
             <div className="msg-content msg-markdown">
               <ReactMarkdown
@@ -1221,24 +1258,43 @@ function ChatPage() {
           )}
           <div
             className={`action-pop ${position === "right" ? "is-right" : "is-left"}`}
+            onMouseDown={(e) => e.stopPropagation()}
           >
             <button
               type="button"
               className="btn btn-ghost btn-xs msg-ellipsis-btn"
-              onClick={() =>
-                setActionOpenId((prev) => (prev === message._id ? null : message._id))
-              }
+              onPointerDown={(e) => {
+                e.preventDefault();
+                setActionOpenId((prev) => (prev === message._id ? null : message._id));
+              }}
             >
               <MoreHorizontal className="h-4 w-4" />
             </button>
             {actionOpenId === message._id && (
-              <div className="action-bar">
+              <div
+                className="action-bar"
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
                 <button
                   className="action-icon-btn"
                   type="button"
+                  onPointerDown={() => {
+                    const id = message?._id || null;
+                    if (!id) return;
+                    setCopiedId(id);
+                    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+                    copyTimerRef.current = setTimeout(() => {
+                      setCopiedId(null);
+                    }, 1200);
+                  }}
                   onClick={() => handleAction(message, "copy")}
                 >
-                  <Copy className="h-4 w-4" />
+                  {copiedId === message._id ? (
+                    <Check className="h-4 w-4" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
                 </button>
                 {position !== "right" && (
                   <button
@@ -1397,6 +1453,7 @@ function ChatPage() {
                       onClick={() => {
                         setChatModelId(m);
                         writeSetting("api_model", m);
+                        emitModelsUpdate();
                       }}
                     >
                       {m}
@@ -1567,16 +1624,16 @@ function ChatPage() {
       )}
       {editSheetOpen && (
         <div
-          className="sheet-backdrop"
+          className="modal-backdrop"
           onClick={() => {
             setEditSheetOpen(false);
             setEditingId(null);
           }}
         >
-          <div className="sheet sheet-edit" onClick={(e) => e.stopPropagation()}>
-            <div className="sheet-edit-header">
+          <div className="app-modal rename-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rename-content rename-content-edit">
               <button
-                className="sheet-edit-btn ghost"
+                className="btn btn-outline btn-sm modal-corner-btn modal-corner-left"
                 type="button"
                 onClick={() => {
                   setEditSheetOpen(false);
@@ -1585,9 +1642,8 @@ function ChatPage() {
               >
                 取消
               </button>
-              <div className="sheet-edit-title">编辑消息</div>
               <button
-                className="sheet-edit-btn"
+                className="btn btn-outline btn-sm modal-corner-btn modal-corner-right"
                 type="button"
                 onClick={() => {
                   const nextText = sanitizeText(editingText);
@@ -1683,13 +1739,14 @@ function ChatPage() {
                   ? "确认并重新发送"
                   : "确认"}
               </button>
+              <div className="rename-title">编辑消息</div>
+              <textarea
+                className="rename-textarea"
+                value={editingText}
+                onChange={(event) => setEditingText(event.target.value)}
+                rows={4}
+              />
             </div>
-            <textarea
-              className="sheet-edit-input"
-              value={editingText}
-              onChange={(event) => setEditingText(event.target.value)}
-              rows={4}
-            />
           </div>
         </div>
       )}
@@ -1787,6 +1844,29 @@ function ToolsPage() {
     }
   }, [tab]);
 
+  useEffect(() => {
+    const onRequestLogsUpdate = () => {
+      if (tab !== "logs") return;
+      setRequestLogs(readRequestLogs());
+    };
+    window.addEventListener("requestlogs:update", onRequestLogsUpdate);
+    return () =>
+      window.removeEventListener("requestlogs:update", onRequestLogsUpdate);
+  }, [tab]);
+
+  useEffect(() => {
+    const onModelsUpdate = () => {
+      try {
+        setAddedModels(JSON.parse(readSetting("opt_added_models", "[]")));
+      } catch {
+        setAddedModels([]);
+      }
+      setModelId(readSetting("api_model"));
+    };
+    window.addEventListener("models:update", onModelsUpdate);
+    return () => window.removeEventListener("models:update", onModelsUpdate);
+  }, []);
+
 
   const handleSave = () => {
     writeSetting("api_url", apiUrl.trim());
@@ -1806,6 +1886,7 @@ function ToolsPage() {
     writeSetting("opt_memory_list", JSON.stringify(memoryList));
     writeSetting("opt_message_template", messageTemplate.trim());
     setSaved(true);
+    emitModelsUpdate();
     setTimeout(() => setSaved(false), 1200);
   };
 
@@ -1893,6 +1974,7 @@ function ToolsPage() {
       setModelId(modelCandidate);
     }
     writeSetting("opt_added_models", JSON.stringify(next));
+    emitModelsUpdate();
   };
 
   const handleRemoveModel = (id) => {
@@ -1904,6 +1986,7 @@ function ToolsPage() {
       setModelId(fallback);
       writeSetting("api_model", fallback);
     }
+    emitModelsUpdate();
   };
 
   return (
@@ -2009,6 +2092,7 @@ function ToolsPage() {
               onChange={(e) => {
                 setModelId(e.target.value);
                 writeSetting("api_model", e.target.value);
+                emitModelsUpdate();
               }}
             >
               <option value="">请选择</option>
@@ -2397,10 +2481,9 @@ function ToolsPage() {
             </div>
             <div className="log-list">
               <div className="log-item">
-                <div className="log-title">
-                  <span>最近 3 次请求（完整内容）</span>
-                  <span className="log-tag request">request</span>
-                </div>
+              <div className="log-title">
+                <span>最近 3 次请求（完整内容）</span>
+              </div>
                 {requestLogs.length === 0 && (
                   <div className="page-card-desc">暂无请求</div>
                 )}
@@ -2419,13 +2502,13 @@ function ToolsPage() {
                           </span>
                           <span className="log-tag response">response</span>
                         </div>
-                        {log.responseJson ? (
-                          <pre className="log-pre">{log.responseJson}</pre>
-                        ) : (
-                          log.responseText && (
-                            <pre className="log-pre">{String(log.responseText)}</pre>
-                          )
-                        )}
+                      {log.responseJson ? (
+                        <pre className="log-pre">{log.responseJson}</pre>
+                      ) : (
+                        log.responseText && (
+                          <pre className="log-pre">{String(log.responseText)}</pre>
+                        )
+                      )}
                       </>
                     )}
                   </div>

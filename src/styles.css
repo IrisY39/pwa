@@ -715,6 +715,17 @@ body {
   color: #111111;
 }
 
+.msg-raw {
+  font-size: 15.5px;
+  line-height: 1.55;
+  letter-spacing: 0.05px;
+  color: #111111;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  font-family: inherit;
+}
+
 .msg-markdown p {
   margin: 0 0 8px;
 }
@@ -1298,6 +1309,42 @@ body {
   color: #111827;
 }
 
+.rename-textarea {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #111827;
+  padding: 10px 12px;
+  resize: vertical;
+  min-height: 110px;
+}
+
+.rename-textarea:focus,
+.rename-textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border-color: #e5e7eb;
+}
+
+.rename-content-edit {
+  position: relative;
+  padding-top: 8px;
+}
+
+.modal-corner-btn {
+  position: absolute;
+  top: 6px;
+}
+
+.modal-corner-left {
+  left: 8px;
+}
+
+.modal-corner-right {
+  right: 8px;
+}
+
 .rename-modal {
   border-radius: 16px;
 }
@@ -1352,6 +1399,24 @@ body {
 .tools-shell .form-btn.ghost {
   background: transparent;
   border: 1px solid rgba(15, 23, 42, 0.18);
+  color: #111827;
+}
+
+.tools-shell .log-title {
+  color: #374151;
+}
+
+.tools-shell .log-line {
+  color: #4b5563;
+}
+
+.tools-shell .log-pre {
+  color: #111827;
+}
+
+.tools-shell .log-tag.request,
+.tools-shell .log-tag.response,
+.tools-shell .log-tag.error {
   color: #111827;
 }
 
