@@ -13,7 +13,10 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Pencil
+  Pencil,
+  Wrench,
+  BookHeart,
+  FileClock
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -1895,7 +1898,7 @@ function ToolsPage() {
   };
 
   return (
-    <div className="page-shell tools-shell">
+    <div className="tools-shell">
       <div className="navbar bg-base-100 shadow-sm app-navbar">
         <div className="navbar-start">
           <button
@@ -1914,34 +1917,23 @@ function ToolsPage() {
         </div>
         <div className="navbar-end" />
       </div>
-      <div className="tab-bar">
-        <button
-          className={`tab-btn ${tab === "api" ? "active" : ""}`}
-          type="button"
-          onClick={() => setTab("api")}
-        >
+      <div className="page-shell">
+      <div className="tabs tabs-lift">
+        <label className="tab">
+          <input
+            type="radio"
+            name="tools_tabs"
+            checked={tab === "api"}
+            onChange={() => setTab("api")}
+          />
+          <Wrench className="size-4 me-2" />
           API 设置
-        </button>
-        <button
-          className={`tab-btn ${tab === "personal" ? "active" : ""}`}
-          type="button"
-          onClick={() => setTab("personal")}
-        >
-          个性化
-        </button>
-        <button
-          className={`tab-btn ${tab === "logs" ? "active" : ""}`}
-          type="button"
-          onClick={() => setTab("logs")}
-        >
-          日志
-        </button>
-      </div>
-
-      {tab === "api" && (
-        <div className="page-card">
-          <div className="page-card-title">API 设置</div>
-        <div className="form-row">
+        </label>
+        <div className="tab-content bg-base-100 border-base-300 p-4">
+        {tab === "api" && (
+          <div className="page-card">
+            <div className="page-card-title">API 设置</div>
+          <div className="form-row">
           <label className="form-label" htmlFor="apiUrl">
             API URL
           </label>
@@ -2042,374 +2034,400 @@ function ToolsPage() {
               </div>
             </div>
           )}
+          </div>
+        )}
         </div>
-      )}
 
-      {tab === "logs" && (
-        <div className="page-card">
-          <div className="page-card-title">请求日志</div>
-          <div className="form-row">
-            <button
-              className="form-btn"
-              type="button"
-              onClick={() => {
-                setLogs(readLogs());
-                setRequestLogs(readRequestLogs());
-              }}
-            >
-              刷新
-            </button>
-            <button className="form-btn ghost" type="button" onClick={handleClearLogs}>
-              清空
-            </button>
-          </div>
-          <div className="log-list">
-            <div className="log-item">
-              <div className="log-title">
-                <span>最近 3 次请求（完整内容）</span>
-                <span className="log-tag request">request</span>
-              </div>
-              {requestLogs.length === 0 && (
-                <div className="page-card-desc">暂无请求</div>
-              )}
-              {requestLogs.map((log) => (
-                <div className="log-item" key={log.id}>
-                  <div className="log-title">
-                    <span>{formatDateTime(log.at)}</span>
-                    <span className="log-tag request">request</span>
-                  </div>
-                  {log.requestJson && <pre className="log-pre">{log.requestJson}</pre>}
-                  {(log.responseStatus || log.responseError || log.responseText || log.responseJson) && (
-                    <>
-                      <div className="log-title">
-                        <span>
-                          {log.responseAt ? formatDateTime(log.responseAt) : "响应"}
-                        </span>
-                        <span className="log-tag response">response</span>
-                      </div>
-                      {log.responseJson ? (
-                        <pre className="log-pre">{log.responseJson}</pre>
-                      ) : (
-                        log.responseText && (
-                          <pre className="log-pre">{String(log.responseText)}</pre>
-                        )
-                      )}
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-
-      {tab === "personal" && (
-        <div className="page-card">
-          <div className="page-card-title">个性化设置</div>
-          <div className="form-row">
-            <label className="form-label" htmlFor="assistantName">
-              助手昵称
-            </label>
-            <input
-              id="assistantName"
-              className="form-input"
-              placeholder="例如 Kelivo"
-              value={assistantName}
-              onChange={(e) => setAssistantName(e.target.value)}
-            />
-          </div>
-          <div className="form-row">
-            <label className="form-label" htmlFor="assistantAvatar">
-              头像链接
-            </label>
-            <input
-              id="assistantAvatar"
-              className="form-input"
-              placeholder="https://..."
-              value={assistantAvatar}
-              onChange={(e) => setAssistantAvatar(e.target.value)}
-            />
-            <div className="memory-actions">
-              <label className="form-btn ghost" htmlFor="assistantAvatarUpload">
-                本地上传
+        <label className="tab">
+          <input
+            type="radio"
+            name="tools_tabs"
+            checked={tab === "personal"}
+            onChange={() => setTab("personal")}
+          />
+          <BookHeart className="size-4 me-2" />
+          个性化
+        </label>
+        <div className="tab-content bg-base-100 border-base-300 p-4">
+        {tab === "personal" && (
+          <div className="page-card">
+            <div className="page-card-title">个性化设置</div>
+            <div className="form-row">
+              <label className="form-label" htmlFor="assistantName">
+                助手昵称
               </label>
               <input
-                id="assistantAvatarUpload"
-                type="file"
-                accept="image/*"
-                onChange={handleAvatarUpload}
-                style={{ display: "none" }}
-              />
-              {assistantAvatar && (
-                <button
-                  className="form-btn ghost"
-                  type="button"
-                  onClick={() => {
-                    setAssistantAvatar("");
-                    writeSetting("opt_assistant_avatar", "");
-                  }}
-                >
-                  清除
-                </button>
-              )}
-            </div>
-            {assistantAvatar && (
-              <div className="avatar-preview">
-                <img src={assistantAvatar} alt="assistant avatar" />
-              </div>
-            )}
-          </div>
-          <div className="form-row">
-            <label className="form-label" htmlFor="userAvatar">
-              用户头像
-            </label>
-            <input
-              id="userAvatar"
-              className="form-input"
-              placeholder="https://..."
-              value={userAvatar}
-              onChange={(e) => setUserAvatar(e.target.value)}
-            />
-            <div className="memory-actions">
-              <label className="form-btn ghost" htmlFor="userAvatarUpload">
-                本地上传
-              </label>
-              <input
-                id="userAvatarUpload"
-                type="file"
-                accept="image/*"
-                onChange={handleUserAvatarUpload}
-                style={{ display: "none" }}
-              />
-              {userAvatar && (
-                <button
-                  className="form-btn ghost"
-                  type="button"
-                  onClick={() => {
-                    setUserAvatar("");
-                    writeSetting("opt_user_avatar", "");
-                  }}
-                >
-                  清除
-                </button>
-              )}
-            </div>
-            {userAvatar && (
-              <div className="avatar-preview">
-                <img src={userAvatar} alt="user avatar" />
-              </div>
-            )}
-          </div>
-          <div className="form-row">
-            <label className="form-label" htmlFor="systemPrompt">
-              System Prompt
-            </label>
-            <textarea
-              id="systemPrompt"
-              className="form-textarea"
-              placeholder="你是一个有帮助的助手..."
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              rows={4}
-            />
-            <div className="token-row">
-              <span className="token-label">变量：</span>
-              <button
-                className="token-chip"
-                type="button"
-                onClick={() =>
-                  setSystemPrompt((prev) =>
-                    prev ? `${prev}{current_datetime}` : "{current_datetime}"
-                  )
-                }
-              >
-                {`{current_datetime}`}
-              </button>
-            </div>
-          </div>
-          <div className="form-row">
-            <label className="form-label">记忆库</label>
-            <label className="form-toggle">
-              <input
-                type="checkbox"
-                checked={memoryEnabled}
-                onChange={(e) => setMemoryEnabled(e.target.checked)}
-              />
-              <span>启用记忆</span>
-            </label>
-            <div className="memory-list">
-              {memoryList.length === 0 && (
-                <div className="page-card-desc">暂无记忆</div>
-              )}
-              {memoryList.map((item, idx) => (
-                <div className="memory-item" key={`${item}-${idx}`}>
-                  {editingMemoryIndex === idx ? (
-                    <>
-                      <input
-                        className="form-input"
-                        value={editingMemoryText}
-                        onChange={(e) => setEditingMemoryText(e.target.value)}
-                      />
-                      <div className="memory-actions">
-                        <button
-                          className="form-btn"
-                          type="button"
-                          onClick={() => {
-                            const next = [...memoryList];
-                            next[idx] = editingMemoryText.trim();
-                            setMemoryList(next.filter(Boolean));
-                            setEditingMemoryIndex(null);
-                            setEditingMemoryText("");
-                          }}
-                        >
-                          保存
-                        </button>
-                        <button
-                          className="form-btn ghost"
-                          type="button"
-                          onClick={() => {
-                            setEditingMemoryIndex(null);
-                            setEditingMemoryText("");
-                          }}
-                        >
-                          取消
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="memory-text">{item}</div>
-                      <div className="memory-actions">
-                        <button
-                          className="form-btn"
-                          type="button"
-                          onClick={() => {
-                            setEditingMemoryIndex(idx);
-                            setEditingMemoryText(item);
-                          }}
-                        >
-                          修改
-                        </button>
-                        <button
-                          className="form-btn ghost"
-                          type="button"
-                          onClick={() => {
-                            const next = memoryList.filter((_, i) => i !== idx);
-                            setMemoryList(next);
-                          }}
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="memory-add">
-              <input
+                id="assistantName"
                 className="form-input"
-                placeholder="新增记忆..."
-                value={memoryDraft}
-                onChange={(e) => setMemoryDraft(e.target.value)}
+                placeholder="例如 Kelivo"
+                value={assistantName}
+                onChange={(e) => setAssistantName(e.target.value)}
               />
+            </div>
+            <div className="form-row">
+              <label className="form-label" htmlFor="assistantAvatar">
+                头像链接
+              </label>
+              <input
+                id="assistantAvatar"
+                className="form-input"
+                placeholder="https://..."
+                value={assistantAvatar}
+                onChange={(e) => setAssistantAvatar(e.target.value)}
+              />
+              <div className="memory-actions">
+                <label className="form-btn ghost" htmlFor="assistantAvatarUpload">
+                  本地上传
+                </label>
+                <input
+                  id="assistantAvatarUpload"
+                  type="file"
+                  accept="image/*"
+                  onChange={handleAvatarUpload}
+                  style={{ display: "none" }}
+                />
+                {assistantAvatar && (
+                  <button
+                    className="form-btn ghost"
+                    type="button"
+                    onClick={() => {
+                      setAssistantAvatar("");
+                      writeSetting("opt_assistant_avatar", "");
+                    }}
+                  >
+                    清除
+                  </button>
+                )}
+              </div>
+              {assistantAvatar && (
+                <div className="avatar-preview">
+                  <img src={assistantAvatar} alt="assistant avatar" />
+                </div>
+              )}
+            </div>
+            <div className="form-row">
+              <label className="form-label" htmlFor="userAvatar">
+                用户头像
+              </label>
+              <input
+                id="userAvatar"
+                className="form-input"
+                placeholder="https://..."
+                value={userAvatar}
+                onChange={(e) => setUserAvatar(e.target.value)}
+              />
+              <div className="memory-actions">
+                <label className="form-btn ghost" htmlFor="userAvatarUpload">
+                  本地上传
+                </label>
+                <input
+                  id="userAvatarUpload"
+                  type="file"
+                  accept="image/*"
+                  onChange={handleUserAvatarUpload}
+                  style={{ display: "none" }}
+                />
+                {userAvatar && (
+                  <button
+                    className="form-btn ghost"
+                    type="button"
+                    onClick={() => {
+                      setUserAvatar("");
+                      writeSetting("opt_user_avatar", "");
+                    }}
+                  >
+                    清除
+                  </button>
+                )}
+              </div>
+              {userAvatar && (
+                <div className="avatar-preview">
+                  <img src={userAvatar} alt="user avatar" />
+                </div>
+              )}
+            </div>
+            <div className="form-row">
+              <label className="form-label" htmlFor="systemPrompt">
+                System Prompt
+              </label>
+              <textarea
+                id="systemPrompt"
+                className="form-textarea"
+                placeholder="你是一个有帮助的助手..."
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                rows={4}
+              />
+              <div className="token-row">
+                <span className="token-label">变量：</span>
+                <button
+                  className="token-chip"
+                  type="button"
+                  onClick={() =>
+                    setSystemPrompt((prev) =>
+                      prev ? `${prev}{current_datetime}` : "{current_datetime}"
+                    )
+                  }
+                >
+                  {`{current_datetime}`}
+                </button>
+              </div>
+            </div>
+            <div className="form-row">
+              <label className="form-label">记忆库</label>
+              <label className="form-toggle">
+                <input
+                  type="checkbox"
+                  checked={memoryEnabled}
+                  onChange={(e) => setMemoryEnabled(e.target.checked)}
+                />
+                <span>启用记忆</span>
+              </label>
+              <div className="memory-list">
+                {memoryList.length === 0 && (
+                  <div className="page-card-desc">暂无记忆</div>
+                )}
+                {memoryList.map((item, idx) => (
+                  <div className="memory-item" key={`${item}-${idx}`}>
+                    {editingMemoryIndex === idx ? (
+                      <>
+                        <input
+                          className="form-input"
+                          value={editingMemoryText}
+                          onChange={(e) => setEditingMemoryText(e.target.value)}
+                        />
+                        <div className="memory-actions">
+                          <button
+                            className="form-btn"
+                            type="button"
+                            onClick={() => {
+                              const next = [...memoryList];
+                              next[idx] = editingMemoryText.trim();
+                              setMemoryList(next.filter(Boolean));
+                              setEditingMemoryIndex(null);
+                              setEditingMemoryText("");
+                            }}
+                          >
+                            保存
+                          </button>
+                          <button
+                            className="form-btn ghost"
+                            type="button"
+                            onClick={() => {
+                              setEditingMemoryIndex(null);
+                              setEditingMemoryText("");
+                            }}
+                          >
+                            取消
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="memory-text">{item}</div>
+                        <div className="memory-actions">
+                          <button
+                            className="form-btn"
+                            type="button"
+                            onClick={() => {
+                              setEditingMemoryIndex(idx);
+                              setEditingMemoryText(item);
+                            }}
+                          >
+                            修改
+                          </button>
+                          <button
+                            className="form-btn ghost"
+                            type="button"
+                            onClick={() => {
+                              const next = memoryList.filter((_, i) => i !== idx);
+                              setMemoryList(next);
+                            }}
+                          >
+                            删除
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="memory-add">
+                <input
+                  className="form-input"
+                  placeholder="新增记忆..."
+                  value={memoryDraft}
+                  onChange={(e) => setMemoryDraft(e.target.value)}
+                />
+                <button
+                  className="form-btn"
+                  type="button"
+                  onClick={() => {
+                    const val = memoryDraft.trim();
+                    if (!val) return;
+                    setMemoryList([val, ...memoryList]);
+                    setMemoryDraft("");
+                  }}
+                >
+                  添加
+                </button>
+              </div>
+            </div>
+            <div className="form-row">
+              <label className="form-label" htmlFor="messageTemplate">
+                聊天内容模板（用 {"{input}"} 代表用户输入）
+              </label>
+              <textarea
+                id="messageTemplate"
+                className="form-textarea"
+                placeholder="请用要点回答：{input}"
+                value={messageTemplate}
+                onChange={(e) => setMessageTemplate(e.target.value)}
+                rows={3}
+              />
+            </div>
+            <div className="form-row">
+              <div className="page-card-title">聊天参数</div>
+              <label className="form-label" htmlFor="temperature">
+                temperature
+              </label>
+              <input
+                id="temperature"
+                className="form-input"
+                placeholder="例如 0.7"
+                value={temperature}
+                onChange={(e) => setTemperature(e.target.value)}
+              />
+            </div>
+            <div className="form-row">
+              <label className="form-label" htmlFor="topP">
+                top_p
+              </label>
+              <input
+                id="topP"
+                className="form-input"
+                placeholder="例如 0.9"
+                value={topP}
+                onChange={(e) => setTopP(e.target.value)}
+              />
+            </div>
+            <div className="form-row">
+              <label className="form-label" htmlFor="maxTokens">
+                max_tokens
+              </label>
+              <input
+                id="maxTokens"
+                className="form-input"
+                placeholder="例如 512"
+                value={maxTokens}
+                onChange={(e) => setMaxTokens(e.target.value)}
+              />
+            </div>
+            <div className="form-row">
+              <label className="form-label" htmlFor="contextLimit">
+                上下文消息数量
+              </label>
+              <input
+                id="contextLimit"
+                className="form-input"
+                placeholder="例如 20（只保留最近 20 条）"
+                value={contextLimit}
+                onChange={(e) => setContextLimit(e.target.value)}
+              />
+            </div>
+            <div className="form-row">
+              <label className="form-label" htmlFor="streamToggle">
+                stream
+              </label>
+              <label className="form-toggle">
+                <input
+                  id="streamToggle"
+                  type="checkbox"
+                  checked={useStream}
+                  onChange={(e) => setUseStream(e.target.checked)}
+                />
+                <span>启用流式</span>
+              </label>
+            </div>
+            <button className="form-btn" type="button" onClick={handleSave}>
+              保存
+            </button>
+            {saved && <div className="form-hint">已保存</div>}
+          </div>
+        )}
+        </div>
+
+        <label className="tab">
+          <input
+            type="radio"
+            name="tools_tabs"
+            checked={tab === "logs"}
+            onChange={() => setTab("logs")}
+          />
+          <FileClock className="size-4 me-2" />
+          日志
+        </label>
+        <div className="tab-content bg-base-100 border-base-300 p-4">
+        {tab === "logs" && (
+          <div className="page-card">
+            <div className="page-card-title">请求日志</div>
+            <div className="form-row">
               <button
                 className="form-btn"
                 type="button"
                 onClick={() => {
-                  const val = memoryDraft.trim();
-                  if (!val) return;
-                  setMemoryList([val, ...memoryList]);
-                  setMemoryDraft("");
+                  setLogs(readLogs());
+                  setRequestLogs(readRequestLogs());
                 }}
               >
-                添加
+                刷新
+              </button>
+              <button className="form-btn ghost" type="button" onClick={handleClearLogs}>
+                清空
               </button>
             </div>
+            <div className="log-list">
+              <div className="log-item">
+                <div className="log-title">
+                  <span>最近 3 次请求（完整内容）</span>
+                  <span className="log-tag request">request</span>
+                </div>
+                {requestLogs.length === 0 && (
+                  <div className="page-card-desc">暂无请求</div>
+                )}
+                {requestLogs.map((log) => (
+                  <div className="log-item" key={log.id}>
+                    <div className="log-title">
+                      <span>{formatDateTime(log.at)}</span>
+                      <span className="log-tag request">request</span>
+                    </div>
+                    {log.requestJson && <pre className="log-pre">{log.requestJson}</pre>}
+                    {(log.responseStatus || log.responseError || log.responseText || log.responseJson) && (
+                      <>
+                        <div className="log-title">
+                          <span>
+                            {log.responseAt ? formatDateTime(log.responseAt) : "响应"}
+                          </span>
+                          <span className="log-tag response">response</span>
+                        </div>
+                        {log.responseJson ? (
+                          <pre className="log-pre">{log.responseJson}</pre>
+                        ) : (
+                          log.responseText && (
+                            <pre className="log-pre">{String(log.responseText)}</pre>
+                          )
+                        )}
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-          <div className="form-row">
-            <label className="form-label" htmlFor="messageTemplate">
-              聊天内容模板（用 {"{input}"} 代表用户输入）
-            </label>
-            <textarea
-              id="messageTemplate"
-              className="form-textarea"
-              placeholder="请用要点回答：{input}"
-              value={messageTemplate}
-              onChange={(e) => setMessageTemplate(e.target.value)}
-              rows={3}
-            />
-          </div>
-          <div className="form-row">
-            <div className="page-card-title">聊天参数</div>
-            <label className="form-label" htmlFor="temperature">
-              temperature
-            </label>
-            <input
-              id="temperature"
-              className="form-input"
-              placeholder="例如 0.7"
-              value={temperature}
-              onChange={(e) => setTemperature(e.target.value)}
-            />
-          </div>
-          <div className="form-row">
-            <label className="form-label" htmlFor="topP">
-              top_p
-            </label>
-            <input
-              id="topP"
-              className="form-input"
-              placeholder="例如 0.9"
-              value={topP}
-              onChange={(e) => setTopP(e.target.value)}
-            />
-          </div>
-          <div className="form-row">
-            <label className="form-label" htmlFor="maxTokens">
-              max_tokens
-            </label>
-            <input
-              id="maxTokens"
-              className="form-input"
-              placeholder="例如 512"
-              value={maxTokens}
-              onChange={(e) => setMaxTokens(e.target.value)}
-            />
-          </div>
-          <div className="form-row">
-            <label className="form-label" htmlFor="contextLimit">
-              上下文消息数量
-            </label>
-            <input
-              id="contextLimit"
-              className="form-input"
-              placeholder="例如 20（只保留最近 20 条）"
-              value={contextLimit}
-              onChange={(e) => setContextLimit(e.target.value)}
-            />
-          </div>
-          <div className="form-row">
-            <label className="form-label" htmlFor="streamToggle">
-              stream
-            </label>
-            <label className="form-toggle">
-              <input
-                id="streamToggle"
-                type="checkbox"
-                checked={useStream}
-                onChange={(e) => setUseStream(e.target.checked)}
-              />
-              <span>启用流式</span>
-            </label>
-          </div>
-          <button className="form-btn" type="button" onClick={handleSave}>
-            保存
-          </button>
-          {saved && <div className="form-hint">已保存</div>}
+        )}
         </div>
-      )}
+      </div>
+    </div>
     </div>
   );
 }
@@ -2561,6 +2579,8 @@ function SessionsPage() {
     return () => window.removeEventListener("click", onClick);
   }, [menuSessionId, showRename, deleteSessionId]);
 
+
+
   return (
     <div className="sessions-shell">
       <div className="navbar bg-base-100 shadow-sm app-navbar">
@@ -2597,10 +2617,10 @@ function SessionsPage() {
           {filteredSessions
             .slice()
             .sort((a, b) => b.session.updatedAt - a.session.updatedAt)
-            .map(({ session: s, titleMatch, preview }) => (
+            .map(({ session: s, titleMatch, preview }, idx, arr) => (
               <button
                 key={s.id}
-                className={`session-item${menuSessionId === s.id ? " is-active" : ""}`}
+                className={`session-item${menuSessionId === s.id ? " is-active" : ""}${idx === arr.length - 1 ? " is-last" : ""}`}
                 onClick={() => {
                   if (menuSessionId === s.id) return;
                   writeCurrentSessionId(s.id);

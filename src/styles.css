@@ -103,6 +103,10 @@ body {
   border: 1px solid rgba(0, 0, 0, 0.06);
   color: #111827;
   position: relative;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .session-item.is-active {
@@ -114,7 +118,8 @@ body {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  top: calc(100% + 6px);
+  top: calc(100% - 35px);
+  bottom: auto;
   width: 150px;
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.12);
@@ -123,6 +128,7 @@ body {
   z-index: 20;
   box-shadow: none;
 }
+
 
 .session-dropdown .menu {
   padding: 0;
@@ -190,6 +196,7 @@ body::-webkit-scrollbar {
 
 .ChatPage {
   height: 100vh;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
   background: #ffffff;
@@ -397,6 +404,7 @@ body {
 
 .chat-shell {
   height: 100vh;
+  min-height: 100vh;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -994,6 +1002,14 @@ body {
   display: grid;
   gap: 8px;
   margin-top: 8px;
+  overflow: visible;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.session-card {
+  overflow: visible;
 }
 
 .session-search-input {
@@ -1309,7 +1325,38 @@ body {
 }
 
 .tools-shell {
+  min-height: 100vh;
+  background: #f7f8fb;
+}
+
+.tools-shell .page-shell {
   padding-top: 0;
+  color: #111827;
+}
+
+.tools-shell .tabs .tab {
+  color: #6b7280;
+}
+
+.tools-shell .tabs .tab input:checked ~ * {
+  color: #111827;
+}
+
+.tools-shell .form-btn {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.tools-shell .form-btn.ghost {
+  background: transparent;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  color: #111827;
+}
+
+@supports (height: 100dvh) {
+  .tools-shell {
+    min-height: 100dvh;
+  }
 }
 
 .page-header {
@@ -1867,6 +1914,18 @@ select.form-input {
 .sessions-shell {
   min-height: 100vh;
   background: #f7f8fb;
+}
+
+@supports (height: 100dvh) {
+  .ChatPage,
+  .chat-shell {
+    height: 100dvh;
+    min-height: 100dvh;
+  }
+
+  .sessions-shell {
+    min-height: 100dvh;
+  }
 }
 
 
