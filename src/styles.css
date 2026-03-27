@@ -116,8 +116,9 @@ body {
 
 .session-dropdown {
   position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 0;
+  left: auto;
+  transform: none;
   top: calc(100% - 35px);
   bottom: auto;
   width: 150px;
@@ -235,11 +236,11 @@ body::-webkit-scrollbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border-top: 0;
   background: transparent;
   width: 100%;
-  padding-bottom: 6px !important;
+  padding-bottom: 4px !important;
   flex-direction: row !important;
   --composer-height: 42px;
   --fab-size: 42px;

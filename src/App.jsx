@@ -848,7 +848,9 @@ function ChatPage() {
     if (!el) return;
     el.style.height = "auto";
     const max = 160;
-    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+    const base = 42;
+    const nextHeight = Math.min(Math.max(el.scrollHeight, base), max);
+    el.style.height = `${nextHeight}px`;
   }, [inputValue]);
 
   const sendChatRequest = async ({ historyList, targetMsgId, appendVariant }) => {
