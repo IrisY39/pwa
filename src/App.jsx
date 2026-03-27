@@ -848,7 +848,14 @@ function ChatPage() {
     if (!el) return;
     el.style.height = "auto";
     const max = 160;
-    const base = 42;
+    const cssBase = parseFloat(
+      getComputedStyle(el).getPropertyValue("--composer-height")
+    );
+    const base = Number.isFinite(cssBase) ? cssBase : 42;
+    if (!inputValue.trim()) {
+      el.style.height = `${base}px`;
+      return;
+    }
     const nextHeight = Math.min(Math.max(el.scrollHeight, base), max);
     el.style.height = `${nextHeight}px`;
   }, [inputValue]);

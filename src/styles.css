@@ -242,8 +242,9 @@ body::-webkit-scrollbar {
   width: 100%;
   padding-bottom: 4px !important;
   flex-direction: row !important;
-  --composer-height: 42px;
-  --fab-size: 42px;
+  --composer-height: 44px;
+  --fab-size: 44px;
+  margin-bottom: 10px;
 }
 
 .composer-input-wrap {
@@ -338,7 +339,7 @@ body {
 }
 
 .composer-input {
-  min-height: 40px;
+  min-height: var(--composer-height);
   max-height: 160px;
   resize: none;
   padding-right: 42px;
