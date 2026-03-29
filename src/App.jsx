@@ -244,6 +244,35 @@ const formatDateTime = (ts) => {
   )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 
+const normalizeMemoryList = (raw) => {
+  if (!Array.isArray(raw)) return [];
+  const now = Date.now();
+  const normalized = raw
+    .map((item) => {
+      if (typeof item === "string") {
+        const content = item.trim();
+        if (!content) return null;
+        return { content, updatedAt: now };
+      }
+      if (item && typeof item === "object") {
+        const content = String(item.content ?? item.text ?? "").trim();
+        if (!content) return null;
+        const rawTime =
+          item.updatedAt ??
+          item.updated_at ??
+          item.createdAt ??
+          item.created_at;
+        let updatedAt =
+          typeof rawTime === "number" ? rawTime : Date.parse(rawTime);
+        if (!Number.isFinite(updatedAt)) updatedAt = now;
+        return { content, updatedAt };
+      }
+      return null;
+    })
+    .filter(Boolean);
+  return normalized;
+};
+
 const getLastMessageTime = (list) => {
   if (!Array.isArray(list) || list.length === 0) return Date.now();
   const last = list[list.length - 1];
@@ -521,6 +550,7 @@ function ChatPage() {
   const [showBackBottom, setShowBackBottom] = useState(false);
   const abortRef = useRef(null);
   const [thinkOpen, setThinkOpen] = useState({});
+  const [toolOpen, setToolOpen] = useState({});
   const suppressSaveRef = useRef(false);
   const atBottomRef = useRef(true);
   const suppressAutoScrollRef = useRef(false);
@@ -815,6 +845,7 @@ function ChatPage() {
   const handleAction = (msg, action) => {
     const text = msg?.content?.text ?? "";
     if (action === "copy") {
+      setActionOpenId(null);
       const id = msg?._id || null;
       if (id && copiedId !== id) {
         setCopiedId(id);
@@ -827,16 +858,19 @@ function ChatPage() {
       return;
     }
     if (action === "delete") {
+      setActionOpenId(null);
       setDeleteTargetId(msg._id);
       return;
     }
     if (action === "edit") {
+      setActionOpenId(null);
       setEditingId(msg._id);
       setEditingText(text);
       setEditSheetOpen(true);
       return;
     }
     if (action === "refresh") {
+      setActionOpenId(null);
       if (msg?.position === "right") return;
       const idx = messages.findIndex((m) => m._id === msg._id);
       if (idx < 0) return;
@@ -908,6 +942,12 @@ function ChatPage() {
     let template = "";
     let memoryEnabled = false;
     let memoryList = [];
+    let searchEnabled = false;
+    let mcpEnabled = false;
+    let mcpUrl = "";
+    let mcpApiKey = "";
+    let webSearchUrl = "";
+    let webSearchApiKey = "";
     let pendingId = targetMsgId || null;
     let pendingCreatedAt = Date.now();
     const controller = new AbortController();
@@ -927,10 +967,18 @@ function ChatPage() {
       template = readSetting("opt_message_template");
       memoryEnabled = readSetting("opt_memory_enabled") === "true";
       try {
-        memoryList = JSON.parse(readSetting("opt_memory_list", "[]"));
+        memoryList = normalizeMemoryList(
+          JSON.parse(readSetting("opt_memory_list", "[]"))
+        );
       } catch {
         memoryList = [];
       }
+      searchEnabled = readSetting("opt_search_enabled") === "true";
+      mcpEnabled = readSetting("opt_mcp_enabled") === "true";
+      mcpUrl = readSetting("mcp_url");
+      mcpApiKey = readSetting("mcp_api_key");
+      webSearchUrl = readSetting("web_search_url");
+      webSearchApiKey = readSetting("web_search_api_key");
 
       if (!modelId) {
         showToast("请选择聊天模型");
@@ -947,28 +995,463 @@ function ChatPage() {
       const trimmed = ctxLimit ? context.slice(-ctxLimit) : context;
 
       const messagesPayload = [];
+      const systemBlocks = [];
+      const toolInstruction = "";
+      const searchPrompt = `## search_web 工具使用说明
+
+当用户询问需要实时信息或最新数据的问题时，使用 search_web 工具进行搜索。
+
+### 引用格式
+- 搜索结果中会包含index(搜索结果序号)和id(搜索结果唯一标识符)，引用格式为：
+  \`具体的引用内容 [citation](index:id)\`
+- **引用必须紧跟在相关内容之后**，在标点符号后面，不得延后到回复结尾
+- 正确格式：\`... [citation](index:id)\` \`... [citation](index:id) [citation](index:id)\`
+
+### 使用规范
+1. **使用时机**
+   - 用户询问最新新闻、事件、数据
+   - 需要查证事实信息
+   - 需要获取技术文档、API信息等
+   
+2. **引用要求**
+   - 使用搜索结果时必须标注引用来源
+   - 每个引用的事实都要紧跟 [citation](index:id) 标记
+   - 不要将所有引用集中在回答末尾
+
+3. **回答格式示例**
+   ✅ 正确：
+   - 据最新报道，该事件发生在昨天下午。[citation](1:a1b2c3)
+   - 技术文档显示该功能需要版本3.0以上。[citation](2:d4e5f6) 具体配置步骤如下...[citation](3:g7h8i9)
+   
+   ❌ 错误：
+   - 据最新报道，该事件发生在昨天下午。技术文档显示该功能需要版本3.0以上。
+     [citation](1:a1b2c3) [citation](2:d4e5f6)`;
+      const nowText = new Date().toLocaleString();
+      const replaceDatetimeVars = (text) =>
+        text
+          .replaceAll("{current_datetime}", nowText)
+          .replaceAll("{cur_datetime}", nowText);
       if (systemPrompt) {
-        messagesPayload.push({ role: "system", content: systemPrompt });
+        systemBlocks.push(replaceDatetimeVars(systemPrompt));
       }
       if (memoryEnabled && memoryList.length) {
-        messagesPayload.push({
-          role: "system",
-          content: `记忆库：\n${memoryList.map((m) => `- ${m}`).join("\n")}`
-        });
+        const memBlock = [
+          "## Memories",
+          "These are memories that you can reference in the future conversations.",
+          "<memories>",
+          ...memoryList.map(
+            (m, idx) =>
+              [
+                "<record>",
+                `<id>${idx + 1}</id>`,
+                `<content>${m.content}</content>`,
+                "</record>"
+              ].join("\n")
+          ),
+          "</memories>",
+          "## Memory Tool",
+          "你是一个无状态的大模型，你无法存储记忆，因此为了记住信息，你需要使用**记忆工具**。",
+          "你可以使用 `create_memory`, `edit_memory`, `delete_memory` 工具创建、更新或删除记忆。",
+          "- 如果记忆中没有相关信息，请使用 create_memory 创建一条新的记录。",
+          "- 如果已有相关记录，请使用 edit_memory 更新内容。",
+          "- 若记忆过时或无用，请使用 delete_memory 删除",
+          "这些记忆会自动包含在未来的对话上下文中，在<memories>标签内。",
+          "在与用户聊天过程中，你可以**主动**记录用户相关的信息到记忆里，包括但不限于：",
+          "- 用户的兴趣爱好",
+          "- 计划事项",
+          "- 聊天风格偏好",
+          "- 工作相关事项等",
+          "请主动调用工具记录，而不是需要用户要求。",
+          `记忆如果包含日期信息，请包含在内，请使用绝对时间格式，并且当前时间是 ${new Date().toLocaleString()}。`,
+          "无需告知用户你已更改记忆记录，也不要在对话中直接显示记忆内容，除非用户主动要求。",
+          "相似或相关的记忆应合并为一条记录，而不要重复记录，过时记录应删除。"
+        ].join("\n");
+        systemBlocks.push(memBlock);
       }
       if (template) {
+        systemBlocks.push(`聊天内容模板：\n${replaceDatetimeVars(template)}`);
+      }
+      if (toolInstruction) systemBlocks.push(toolInstruction);
+      if (searchEnabled) systemBlocks.push(searchPrompt);
+
+      const tools = [
+        {
+          type: "function",
+          function: {
+            name: "create_memory",
+            description: "create a memory record",
+            parameters: {
+              type: "object",
+              properties: {
+                content: {
+                  type: "string",
+                  description: "The content of the memory record"
+                }
+              },
+              required: ["content"]
+            }
+          }
+        },
+        {
+          type: "function",
+          function: {
+            name: "edit_memory",
+            description: "update a memory record",
+            parameters: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "integer",
+                  description: "The id of the memory record"
+                },
+                content: {
+                  type: "string",
+                  description: "The content of the memory record"
+                }
+              },
+              required: ["id", "content"]
+            }
+          }
+        },
+        {
+          type: "function",
+          function: {
+            name: "delete_memory",
+            description: "delete a memory record",
+            parameters: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "integer",
+                  description: "The id of the memory record"
+                }
+              },
+              required: ["id"]
+            }
+          }
+        },
+        ...(mcpEnabled
+          ? [
+              {
+                type: "function",
+                function: {
+                  name: "mcp_call",
+                  description: "调用 MCP 工具",
+                  parameters: {
+                    type: "object",
+                    properties: {
+                      server: { type: "string", description: "MCP 服务器名称" },
+                      tool: { type: "string", description: "工具名称" },
+                      arguments: { type: "object", description: "工具参数" }
+                    },
+                    required: ["server", "tool", "arguments"]
+                  }
+                }
+              }
+            ]
+          : []),
+        ...(searchEnabled
+          ? [
+              {
+                type: "function",
+                function: {
+                  name: "search_web",
+                  description: "Search the web for information",
+                  parameters: {
+                    type: "object",
+                    properties: {
+                      query: {
+                        type: "string",
+                        description: "The search query to look up online"
+                      }
+                    },
+                    required: ["query"]
+                  }
+                }
+              }
+            ]
+          : [])
+      ];
+
+      if (systemBlocks.length > 0) {
         messagesPayload.push({
           role: "system",
-          content: `聊天内容模板：\n${template}`
+          content: systemBlocks.join("\n\n")
         });
       }
       trimmed.forEach((m) => messagesPayload.push(m));
 
+      const safeParseJson = (value, fallback = {}) => {
+        if (!value || typeof value !== "string") return fallback;
+        try {
+          return JSON.parse(value);
+        } catch {
+          return fallback;
+        }
+      };
+
+      const readMemoryList = () => {
+        try {
+          return normalizeMemoryList(
+            JSON.parse(readSetting("opt_memory_list", "[]"))
+          );
+        } catch {
+          return [];
+        }
+      };
+
+      const writeMemoryList = (list) => {
+        writeSetting("opt_memory_list", JSON.stringify(list));
+        window.dispatchEvent(new Event("memory:update"));
+      };
+
+      const runToolCall = async (toolCall) => {
+        const name = toolCall?.function?.name || toolCall?.name || "";
+        const argsText = toolCall?.function?.arguments || toolCall?.arguments || "{}";
+        const args = safeParseJson(argsText, {});
+        const result = { ok: false };
+        const buildUrl = (base, params = {}) => {
+          if (!base) return "";
+          let next = base;
+          Object.entries(params).forEach(([key, value]) => {
+            next = next.replaceAll(`{${key}}`, encodeURIComponent(String(value)));
+          });
+          return next;
+        };
+        const fetchTool = async (baseUrl, payload, apiKeyValue, options = {}) => {
+          if (!baseUrl) {
+            return {
+              ok: false,
+              error: "未配置工具地址"
+            };
+          }
+          const method = options.method || "POST";
+          const url = options.url || baseUrl;
+          const headers = {
+            "Content-Type": "application/json",
+            ...(apiKeyValue ? { Authorization: `Bearer ${apiKeyValue}` } : {})
+          };
+          const res = await fetch(url, {
+            method,
+            headers,
+            body: method === "GET" ? undefined : JSON.stringify(payload)
+          });
+          const text = await res.text();
+          let data;
+          try {
+            data = JSON.parse(text);
+          } catch {
+            data = text;
+          }
+          return {
+            ok: res.ok,
+            status: res.status,
+            data
+          };
+        };
+
+        if (name === "create_memory") {
+          const content = String(args?.content || "").trim();
+          if (!content) {
+            return {
+              tool_call_id: toolCall?.id,
+              name,
+              content: JSON.stringify(
+                { ok: false, error: "content 不能为空" },
+                null,
+                2
+              )
+            };
+          }
+          const list = readMemoryList();
+          list.unshift({ content, updatedAt: Date.now() });
+          writeMemoryList(list);
+          return {
+            tool_call_id: toolCall?.id,
+            name,
+            content: JSON.stringify(
+              { ok: true, id: 1, content },
+              null,
+              2
+            )
+          };
+        }
+
+        if (name === "edit_memory") {
+          const idRaw = args?.id;
+          const content = String(args?.content || "").trim();
+          const list = readMemoryList();
+          const idx = Number.isFinite(Number(idRaw)) ? Number(idRaw) - 1 : -1;
+          if (!content) {
+            return {
+              tool_call_id: toolCall?.id,
+              name,
+              content: JSON.stringify(
+                { ok: false, error: "content 不能为空" },
+                null,
+                2
+              )
+            };
+          }
+          if (idx < 0 || idx >= list.length) {
+            return {
+              tool_call_id: toolCall?.id,
+              name,
+              content: JSON.stringify(
+                { ok: false, error: "需要有效的 id" },
+                null,
+                2
+              )
+            };
+          }
+          const before = list[idx]?.content || "";
+          list[idx] = { ...list[idx], content, updatedAt: Date.now() };
+          writeMemoryList(list);
+          return {
+            tool_call_id: toolCall?.id,
+            name,
+            content: JSON.stringify(
+              { ok: true, id: idx + 1, before, after: content },
+              null,
+              2
+            )
+          };
+        }
+
+        if (name === "delete_memory") {
+          const idRaw = args?.id;
+          const list = readMemoryList();
+          let removed = null;
+          const idx = Number.isFinite(Number(idRaw)) ? Number(idRaw) - 1 : -1;
+          if (idx >= 0 && idx < list.length) {
+            removed = { id: idx + 1, content: list[idx].content };
+            list.splice(idx, 1);
+            writeMemoryList(list);
+            return {
+              tool_call_id: toolCall?.id,
+              name,
+              content: JSON.stringify({ ok: true, removed }, null, 2)
+            };
+          }
+          return {
+            tool_call_id: toolCall?.id,
+            name,
+            content: JSON.stringify(
+              { ok: false, error: "未找到可删除的记忆" },
+              null,
+              2
+            )
+          };
+        }
+
+        if (name === "mcp_call") {
+          const server = String(args?.server || "").trim();
+          const tool = String(args?.tool || "").trim();
+          const argumentsPayload = args?.arguments || {};
+          const finalUrl = buildUrl(mcpUrl, { server, tool });
+          const resp = await fetchTool(
+            finalUrl || mcpUrl,
+            { server, tool, arguments: argumentsPayload },
+            mcpApiKey,
+            { method: "POST", url: finalUrl || mcpUrl }
+          );
+          return {
+            tool_call_id: toolCall?.id,
+            name,
+            content: JSON.stringify(resp, null, 2)
+          };
+        }
+
+        if (name === "search_web") {
+          const query = String(args?.query || "").trim();
+          const urlWithQuery = webSearchUrl.includes("{query}")
+            ? buildUrl(webSearchUrl, { query })
+            : webSearchUrl;
+          const method = webSearchUrl.includes("{query}") ? "GET" : "POST";
+          const resp = await fetchTool(
+            urlWithQuery,
+            { query },
+            webSearchApiKey,
+            { method, url: urlWithQuery }
+          );
+          return {
+            tool_call_id: toolCall?.id,
+            name,
+            content: JSON.stringify(resp, null, 2)
+          };
+        }
+
+        return {
+          tool_call_id: toolCall?.id,
+          name,
+          content: JSON.stringify(
+            { ...result, error: "未知工具" },
+            null,
+            2
+          )
+        };
+      };
+
+      const normalizeToolCalls = (toolCalls) =>
+        toolCalls.map((call) => ({
+          id: call.id || crypto?.randomUUID?.() || String(Date.now()),
+          type: "function",
+          function: {
+            name: call?.function?.name || call?.name || "",
+            arguments: call?.function?.arguments || call?.arguments || "{}"
+          }
+        }));
+
+      const buildToolTags = (calls, results) => {
+        const callTags = calls
+          .map(
+            (c) =>
+              `<tool_call name="${c.function?.name || c.name || ""}">${c
+                .function?.arguments || c.arguments || ""}</tool_call>`
+          )
+          .join("\n");
+        const resultTags = results
+          .map(
+            (r) =>
+              `<tool_result name="${r.name || ""}">${r.content || ""}</tool_result>`
+          )
+          .join("\n");
+        return [callTags, resultTags].filter(Boolean).join("\n");
+      };
+
+      const handleToolCalls = async (toolCalls, baseMessages) => {
+        const normalizedCalls = normalizeToolCalls(toolCalls);
+        const toolResults = [];
+        for (const call of normalizedCalls) {
+          // eslint-disable-next-line no-await-in-loop
+          toolResults.push(await runToolCall(call));
+        }
+        const assistantToolMessage = {
+          role: "assistant",
+          content: "",
+          tool_calls: normalizedCalls
+        };
+        const toolMessages = toolResults.map((r) => ({
+          role: "tool",
+          tool_call_id: r.tool_call_id,
+          content: r.content
+        }));
+        return {
+          nextMessages: [...baseMessages, assistantToolMessage, ...toolMessages],
+          toolTags: buildToolTags(normalizedCalls, toolResults)
+        };
+      };
+
       const body = {
         model: modelId,
         messages: messagesPayload,
+        tools,
+        tool_choice: "auto",
         stream: useStream
       };
+      if (useStream) {
+        body.stream_options = { include_usage: true };
+      }
       if (typeof temperature === "number") body.temperature = temperature;
       if (typeof topP === "number") body.top_p = topP;
       if (typeof maxTokens === "number") body.max_tokens = maxTokens;
@@ -1005,6 +1488,9 @@ function ChatPage() {
         body: JSON.stringify(body),
         signal: controller.signal
       });
+
+      const resolveTokens = (text, usageValue) =>
+        typeof usageValue === "number" ? usageValue : estimateTokens(text);
 
       if (!useStream) {
         const rawText = await res.text();
@@ -1046,6 +1532,96 @@ function ChatPage() {
           });
           return;
         }
+        let toolTags = "";
+        const toolCalls =
+          data?.choices?.[0]?.message?.tool_calls ||
+          data?.choices?.[0]?.tool_calls ||
+          [];
+        if (toolCalls.length > 0) {
+          const handled = await handleToolCalls(toolCalls, messagesPayload);
+          const nextMessages = handled.nextMessages;
+          toolTags = handled.toolTags;
+          if (toolTags) {
+            applyAssistantUpdate({
+              id: pendingId,
+              text: toolTags,
+              tokens: estimateTokens(toolTags),
+              isPending: true,
+              appendVariant: false,
+              createdAt: pendingCreatedAt
+            });
+          }
+          const followBody = { ...body, messages: nextMessages, stream: false };
+          const followLogId = crypto?.randomUUID?.() || String(Date.now());
+          appendLog({
+            id: followLogId,
+            at: Date.now(),
+            type: "request",
+            requestJson: JSON.stringify(followBody, null, 2)
+          });
+          const followRes = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+            },
+            body: JSON.stringify(followBody),
+            signal: controller.signal
+          });
+          const followText = await followRes.text();
+          updateRequestLog(followLogId, {
+            responseAt: Date.now(),
+            responseStatus: followRes.status,
+            responseText: followText
+          });
+          if (!followRes.ok) {
+            applyAssistantUpdate({
+              id: pendingId,
+              text: followText || `HTTP ${followRes.status}`,
+              tokens: pendingMsg.tokens,
+              isPending: false,
+              appendVariant: !!appendVariant,
+              createdAt: pendingCreatedAt
+            });
+            return;
+          }
+          let followData;
+          try {
+            followData = JSON.parse(followText);
+            updateRequestLog(followLogId, {
+              responseJson: JSON.stringify(followData, null, 2)
+            });
+          } catch {
+            applyAssistantUpdate({
+              id: pendingId,
+              text: followText,
+              tokens: pendingMsg.tokens,
+              isPending: false,
+              appendVariant: !!appendVariant,
+              createdAt: pendingCreatedAt
+            });
+            return;
+          }
+          const followContent =
+            followData?.choices?.[0]?.message?.content ||
+            followData?.choices?.[0]?.delta?.content ||
+            followData?.output_text ||
+            "";
+          const followUsage =
+            followData?.usage?.total_tokens ??
+            followData?.usage?.totalTokens ??
+            followData?.usage?.total;
+          const finalTokens = resolveTokens(followContent, followUsage);
+          applyAssistantUpdate({
+            id: pendingId,
+            text: toolTags ? `${toolTags}\n${followContent}` : followContent,
+            tokens: finalTokens,
+            isPending: false,
+            appendVariant: !!appendVariant,
+            createdAt: pendingCreatedAt
+          });
+          return;
+        }
         const content =
           data?.choices?.[0]?.message?.content ||
           data?.choices?.[0]?.delta?.content ||
@@ -1053,10 +1629,7 @@ function ChatPage() {
           "";
         const usageTokens =
           data?.usage?.total_tokens ?? data?.usage?.totalTokens ?? data?.usage?.total;
-        const nextTokens =
-          typeof usageTokens === "number"
-            ? usageTokens
-            : estimateTokens(content);
+        const nextTokens = resolveTokens(content, usageTokens);
         applyAssistantUpdate({
           id: pendingId,
           text: content,
@@ -1072,6 +1645,9 @@ function ChatPage() {
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
       let fullText = "";
+      const toolCallsMap = {};
+      let toolTags = "";
+      let streamUsageTokens;
       if (!reader) return;
 
       while (true) {
@@ -1094,17 +1670,42 @@ function ChatPage() {
                 json?.choices?.[0]?.message?.content ||
                 json?.output_text ||
                 "";
-              if (delta) {
-                fullText += delta;
-                applyAssistantUpdate({
-                  id: pendingId,
-                  text: fullText,
-                  tokens: estimateTokens(fullText),
-                  isPending: true,
-                  appendVariant: false,
-                  createdAt: pendingCreatedAt
+              const usageValue =
+                json?.usage?.total_tokens ??
+                json?.usage?.totalTokens ??
+                json?.usage?.total;
+              if (typeof usageValue === "number") {
+                streamUsageTokens = usageValue;
+              }
+              const deltaToolCalls = json?.choices?.[0]?.delta?.tool_calls || [];
+              if (Array.isArray(deltaToolCalls)) {
+                deltaToolCalls.forEach((tc) => {
+                  const idx = typeof tc.index === "number" ? tc.index : 0;
+                  if (!toolCallsMap[idx]) {
+                    toolCallsMap[idx] = {
+                      id: tc.id,
+                      type: "function",
+                      function: { name: "", arguments: "" }
+                    };
+                  }
+                  if (tc.id) toolCallsMap[idx].id = tc.id;
+                  if (tc.function?.name) toolCallsMap[idx].function.name = tc.function.name;
+                  if (tc.function?.arguments) {
+                    toolCallsMap[idx].function.arguments += tc.function.arguments;
+                  }
                 });
               }
+                if (delta) {
+                  fullText += delta;
+                  applyAssistantUpdate({
+                    id: pendingId,
+                    text: fullText,
+                    tokens: resolveTokens(fullText, streamUsageTokens),
+                    isPending: true,
+                    appendVariant: false,
+                    createdAt: pendingCreatedAt
+                  });
+                }
             } catch {
               // ignore
             }
@@ -1118,10 +1719,112 @@ function ChatPage() {
         responseText: fullText,
         responseJson: null
       });
+      const streamToolCalls = Object.values(toolCallsMap);
+      if (streamToolCalls.length > 0) {
+        updateRequestLog(reqLogId, {
+          responseJson: JSON.stringify({ tool_calls: streamToolCalls }, null, 2)
+        });
+        const handled = await handleToolCalls(streamToolCalls, messagesPayload);
+        const nextMessages = handled.nextMessages;
+        toolTags = handled.toolTags;
+        if (toolTags) {
+          applyAssistantUpdate({
+            id: pendingId,
+            text: toolTags,
+            tokens: estimateTokens(toolTags),
+            isPending: true,
+            appendVariant: false,
+            createdAt: pendingCreatedAt
+          });
+        }
+        const followBody = { ...body, messages: nextMessages, stream: true };
+        const followLogId = crypto?.randomUUID?.() || String(Date.now());
+        appendLog({
+          id: followLogId,
+          at: Date.now(),
+          type: "request",
+          requestJson: JSON.stringify(followBody, null, 2)
+        });
+        const followRes = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+          },
+          body: JSON.stringify(followBody),
+          signal: controller.signal
+        });
+        if (!followRes.body) return;
+        const followReader = followRes.body.getReader();
+        const followDecoder = new TextDecoder("utf-8");
+        let followBuffer = "";
+        let followText = "";
+        let followUsageTokens;
+        while (true) {
+          // eslint-disable-next-line no-await-in-loop
+          const { done: followDone, value: followValue } = await followReader.read();
+          if (followDone) break;
+          const followChunk = followDecoder.decode(followValue, { stream: true });
+          followBuffer += followChunk;
+          const followLines = followBuffer.split("\n");
+          followBuffer = followLines.pop() || "";
+          for (const line of followLines) {
+            const trimmedLine = line.trim();
+            if (!trimmedLine) continue;
+            if (trimmedLine.startsWith("data:")) {
+              const payload = trimmedLine.replace(/^data:\s*/, "");
+              if (payload === "[DONE]") continue;
+              try {
+                const json = JSON.parse(payload);
+                const delta =
+                  json?.choices?.[0]?.delta?.content ||
+                  json?.choices?.[0]?.message?.content ||
+                  json?.output_text ||
+                  "";
+                const usageValue =
+                  json?.usage?.total_tokens ??
+                  json?.usage?.totalTokens ??
+                  json?.usage?.total;
+                if (typeof usageValue === "number") {
+                  followUsageTokens = usageValue;
+                }
+                if (delta) {
+                  followText += delta;
+                  applyAssistantUpdate({
+                    id: pendingId,
+                    text: toolTags ? `${toolTags}\n${followText}` : followText,
+                    tokens: resolveTokens(followText, followUsageTokens),
+                    isPending: true,
+                    appendVariant: false,
+                    createdAt: pendingCreatedAt
+                  });
+                }
+              } catch {
+                // ignore
+              }
+            }
+          }
+        }
+        updateRequestLog(followLogId, {
+          responseAt: Date.now(),
+          responseStatus: followRes.status,
+          responseText: followText,
+          responseJson: null
+        });
+        applyAssistantUpdate({
+          id: pendingId,
+          text: toolTags ? `${toolTags}\n${followText}` : followText,
+          tokens: resolveTokens(followText, followUsageTokens),
+          isPending: false,
+          appendVariant: !!appendVariant,
+          createdAt: pendingCreatedAt
+        });
+        return;
+      }
       applyAssistantUpdate({
         id: pendingId,
         text: fullText,
-        tokens: estimateTokens(fullText),
+        tokens: resolveTokens(fullText, streamUsageTokens),
         isPending: false,
         appendVariant: !!appendVariant,
         createdAt: pendingCreatedAt
@@ -1169,46 +1872,104 @@ function ChatPage() {
           {timeText && <span>{timeText}</span>}
           {showTokens && <span>{` · ${tokens} tokens`}</span>}
         </div>
-        <div
-          className={`chat-bubble ${
-            position === "right" ? "chat-bubble-primary" : ""
-          }`}
-        >
-          {message.isPending && !baseText && (
-            <span className="loading loading-dots loading-sm" />
-          )}
-          {thinkText && (
-            <div className="think-card">
-              <div className="think-header">
-                <span>思考/推理</span>
-                <button
-                  type="button"
-                  className="think-toggle"
-                  onClick={() =>
-                    setThinkOpen((prev) => ({
-                      ...prev,
-                      [message._id]: !prev[message._id]
-                    }))
-                  }
-                >
-                  {thinkOpen[message._id] ? "收起" : "展开"}
-                </button>
-              </div>
-              {thinkOpen[message._id] && (
-                <div className="think-body">
+        <div className="chat-bubble-wrap">
+          {(thinkText || toolParts.length > 0) && (
+            <div className="chat-top-cards">
+            {thinkText && (
+              <div className="think-card collapse collapse-arrow">
+                <input type="checkbox" />
+                <div className="collapse-title think-header">
+                  <span>思考/推理</span>
+                </div>
+                <div className="collapse-content think-body">
                   <pre>{thinkText}</pre>
+                </div>
+              </div>
+            )}
+              {toolParts.length > 0 && (
+                <div className="tool-cards">
+                  {toolParts.map((t, idx) => {
+                    const key = `${message._id}-tool-${idx}`;
+                    const isOpen = !!toolOpen[key];
+                    const parseToolJson = (raw) => {
+                      if (!raw) return null;
+                      try {
+                        return JSON.parse(raw);
+                      } catch {
+                        return null;
+                      }
+                    };
+                    const memoryNames = ["create_memory", "edit_memory", "delete_memory"];
+                    const isMemoryTool = t.type === "result" && memoryNames.includes(t.name);
+                    if (isMemoryTool) {
+                      const payload = parseToolJson(t.content) || {};
+                      const beforeText = payload?.before || payload?.removed?.content || "";
+                      const afterText = payload?.after || payload?.content || "";
+                      const titleMap = {
+                        create_memory: "创建记忆",
+                        edit_memory: "更新记忆",
+                        delete_memory: "删除记忆"
+                      };
+                      return (
+                        <div
+                          className="tool-card collapse collapse-arrow"
+                          key={key}
+                        >
+                          <input type="checkbox" />
+                          <div className="collapse-title tool-card-header">
+                            <span className="tool-card-name">
+                              {titleMap[t.name] || t.name}
+                            </span>
+                          </div>
+                          <div className="collapse-content tool-detail">
+                            {t.name === "create_memory" && (
+                              <div className="tool-diff">
+                                <span className="tool-add">+ {afterText}</span>
+                              </div>
+                            )}
+                            {t.name === "edit_memory" && (
+                              <div className="tool-diff">
+                                {beforeText && (
+                                  <span className="tool-del">- {beforeText}</span>
+                                )}
+                                <span className="tool-add">+ {afterText}</span>
+                              </div>
+                            )}
+                            {t.name === "delete_memory" && (
+                              <div className="tool-diff">
+                                <span className="tool-del">- {beforeText}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="tool-card collapse collapse-arrow" key={key}>
+                        <input type="checkbox" />
+                        <div className="collapse-title tool-card-header">
+                          <span className="tool-card-name">
+                            {t.type === "call" ? "工具调用" : "工具结果"} · {t.name}
+                          </span>
+                        </div>
+                        <div className="collapse-content tool-detail">
+                          <pre className="tool-body">{t.content}</pre>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
           )}
-          {toolParts.map((t, idx) => (
-            <div className="tool-card" key={`${t.name}-${idx}`}>
-              <div className="tool-title">
-                {t.type === "call" ? "工具调用" : "工具结果"} · {t.name}
-              </div>
-              <pre className="tool-body">{t.content}</pre>
-            </div>
-          ))}
+          <div
+            className={`chat-bubble ${
+              position === "right" ? "chat-bubble-primary" : ""
+            }`}
+          >
+            {message.isPending && !baseText && (
+              <span className="loading loading-dots loading-sm" />
+            )}
           {baseText && (
             <div className="msg-content msg-markdown">
               <ReactMarkdown
@@ -1225,6 +1986,7 @@ function ChatPage() {
               </ReactMarkdown>
             </div>
           )}
+          </div>
         </div>
         <div className="chat-footer">
           {position === "right" && variantCount > 1 && (
@@ -1806,6 +2568,12 @@ function ToolsPage() {
   const [maxTokens, setMaxTokens] = useState(() => readSetting("opt_max_tokens"));
   const [contextLimit, setContextLimit] = useState(() => readSetting("opt_context_limit"));
   const [useStream, setUseStream] = useState(() => readSetting("opt_stream") === "true");
+  const [mcpUrl, setMcpUrl] = useState(() => readSetting("mcp_url"));
+  const [mcpApiKey, setMcpApiKey] = useState(() => readSetting("mcp_api_key"));
+  const [webSearchUrl, setWebSearchUrl] = useState(() => readSetting("web_search_url"));
+  const [webSearchApiKey, setWebSearchApiKey] = useState(() =>
+    readSetting("web_search_api_key")
+  );
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelError, setModelError] = useState("");
   const [saved, setSaved] = useState(false);
@@ -1823,12 +2591,18 @@ function ToolsPage() {
   );
   const [systemPrompt, setSystemPrompt] = useState(() => readSetting("opt_system_prompt"));
   const [messageTemplate, setMessageTemplate] = useState(() => readSetting("opt_message_template"));
+  const [searchEnabled, setSearchEnabled] = useState(
+    () => readSetting("opt_search_enabled") !== "false"
+  );
+  const [mcpEnabled, setMcpEnabled] = useState(
+    () => readSetting("opt_mcp_enabled") === "true"
+  );
   const [memoryEnabled, setMemoryEnabled] = useState(
     () => readSetting("opt_memory_enabled") === "true"
   );
   const [memoryList, setMemoryList] = useState(() => {
     try {
-      return JSON.parse(readSetting("opt_memory_list", "[]"));
+      return normalizeMemoryList(JSON.parse(readSetting("opt_memory_list", "[]")));
     } catch {
       return [];
     }
@@ -1867,6 +2641,20 @@ function ToolsPage() {
     return () => window.removeEventListener("models:update", onModelsUpdate);
   }, []);
 
+  useEffect(() => {
+    const onMemoryUpdate = () => {
+      try {
+        setMemoryList(
+          normalizeMemoryList(JSON.parse(readSetting("opt_memory_list", "[]")))
+        );
+      } catch {
+        setMemoryList([]);
+      }
+    };
+    window.addEventListener("memory:update", onMemoryUpdate);
+    return () => window.removeEventListener("memory:update", onMemoryUpdate);
+  }, []);
+
 
   const handleSave = () => {
     writeSetting("api_url", apiUrl.trim());
@@ -1885,6 +2673,12 @@ function ToolsPage() {
     writeSetting("opt_memory_enabled", memoryEnabled ? "true" : "false");
     writeSetting("opt_memory_list", JSON.stringify(memoryList));
     writeSetting("opt_message_template", messageTemplate.trim());
+    writeSetting("opt_search_enabled", searchEnabled ? "true" : "false");
+    writeSetting("opt_mcp_enabled", mcpEnabled ? "true" : "false");
+    writeSetting("mcp_url", mcpUrl.trim());
+    writeSetting("mcp_api_key", mcpApiKey.trim());
+    writeSetting("web_search_url", webSearchUrl.trim());
+    writeSetting("web_search_api_key", webSearchApiKey.trim());
     setSaved(true);
     emitModelsUpdate();
     setTimeout(() => setSaved(false), 1200);
@@ -2047,6 +2841,79 @@ function ToolsPage() {
             placeholder="sk-..."
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
+          />
+        </div>
+        <div className="form-row">
+          <label className="form-label" htmlFor="mcpUrl">
+            MCP 地址
+          </label>
+          <input
+            id="mcpUrl"
+            className="form-input"
+            placeholder="https://mcp.example.com/call"
+            value={mcpUrl}
+            onChange={(e) => setMcpUrl(e.target.value)}
+          />
+        </div>
+        <div className="form-row">
+          <label className="form-label">开启 MCP 工具</label>
+          <label className="form-toggle">
+            <input
+              type="checkbox"
+              checked={mcpEnabled}
+              onChange={(e) => setMcpEnabled(e.target.checked)}
+            />
+            <span>启用 MCP</span>
+          </label>
+        </div>
+        <div className="form-row">
+          <label className="form-label" htmlFor="mcpApiKey">
+            MCP Key
+          </label>
+          <input
+            id="mcpApiKey"
+            className="form-input"
+            placeholder="可选"
+            value={mcpApiKey}
+            onChange={(e) => setMcpApiKey(e.target.value)}
+          />
+        </div>
+        <div className="form-row">
+          <label className="form-label" htmlFor="webSearchUrl">
+            搜索地址
+          </label>
+          <input
+            id="webSearchUrl"
+            className="form-input"
+            placeholder="https://search.example.com?q={query}"
+            value={webSearchUrl}
+            onChange={(e) => setWebSearchUrl(e.target.value)}
+          />
+          <div className="form-hint">
+            如果包含 {`{query}`} 会用 GET，否则用 POST 发送 {"{query}"}。
+          </div>
+        </div>
+        <div className="form-row">
+          <label className="form-label">开启搜索工具</label>
+          <label className="form-toggle">
+            <input
+              type="checkbox"
+              checked={searchEnabled}
+              onChange={(e) => setSearchEnabled(e.target.checked)}
+            />
+            <span>启用搜索</span>
+          </label>
+        </div>
+        <div className="form-row">
+          <label className="form-label" htmlFor="webSearchApiKey">
+            搜索 Key
+          </label>
+          <input
+            id="webSearchApiKey"
+            className="form-input"
+            placeholder="可选"
+            value={webSearchApiKey}
+            onChange={(e) => setWebSearchApiKey(e.target.value)}
           />
         </div>
         <button className="form-btn" type="button" onClick={handleSave}>
@@ -2281,7 +3148,7 @@ function ToolsPage() {
                   <div className="page-card-desc">暂无记忆</div>
                 )}
                 {memoryList.map((item, idx) => (
-                  <div className="memory-item" key={`${item}-${idx}`}>
+                  <div className="memory-item" key={`${item.content}-${idx}`}>
                     {editingMemoryIndex === idx ? (
                       <>
                         <input
@@ -2295,8 +3162,15 @@ function ToolsPage() {
                             type="button"
                             onClick={() => {
                               const next = [...memoryList];
-                              next[idx] = editingMemoryText.trim();
-                              setMemoryList(next.filter(Boolean));
+                              const content = editingMemoryText.trim();
+                              if (content) {
+                                next[idx] = {
+                                  ...next[idx],
+                                  content,
+                                  updatedAt: Date.now()
+                                };
+                              }
+                              setMemoryList(next.filter((m) => m?.content));
                               setEditingMemoryIndex(null);
                               setEditingMemoryText("");
                             }}
@@ -2317,14 +3191,17 @@ function ToolsPage() {
                       </>
                     ) : (
                       <>
-                        <div className="memory-text">{item}</div>
+                        <div className="memory-text">{item.content}</div>
+                        <div className="memory-time">
+                          {formatDateTime(item.updatedAt)}
+                        </div>
                         <div className="memory-actions">
                           <button
                             className="form-btn"
                             type="button"
                             onClick={() => {
                               setEditingMemoryIndex(idx);
-                              setEditingMemoryText(item);
+                              setEditingMemoryText(item.content);
                             }}
                           >
                             修改
@@ -2358,7 +3235,7 @@ function ToolsPage() {
                   onClick={() => {
                     const val = memoryDraft.trim();
                     if (!val) return;
-                    setMemoryList([val, ...memoryList]);
+                    setMemoryList([{ content: val, updatedAt: Date.now() }, ...memoryList]);
                     setMemoryDraft("");
                   }}
                 >
