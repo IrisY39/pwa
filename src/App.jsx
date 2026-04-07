@@ -402,11 +402,34 @@ function ChatPage() {
 
   const buildHistoryList = (list) =>
     list
-      .filter((m) => m?.content?.text)
-      .map((m) => ({
-        role: m.position === "right" ? "user" : "assistant",
-        content: sanitizeText(getMessageTextForHistory(m))
-      }));
+      .map((m) => {
+        const raw = getMessageTextForHistory(m);
+        const extracted = extractThinkAndTools(raw);
+        const cleaned = extracted.cleanText;
+        const toolTags =
+          m.position === "right"
+            ? ""
+            : extracted.tools
+                .map((t) => {
+                  const name = t.name || "";
+                  const content = t.content || "";
+                  if (t.type === "call") {
+                    return `<tool_call name="${name}">${content}</tool_call>`;
+                  }
+                  if (t.type === "result") {
+                    return `<tool_result name="${name}">${content}</tool_result>`;
+                  }
+                  return "";
+                })
+                .filter(Boolean)
+                .join("\n");
+        const combined = [cleaned, toolTags].filter(Boolean).join("\n");
+        return {
+          role: m.position === "right" ? "user" : "assistant",
+          content: sanitizeText(combined)
+        };
+      })
+      .filter((m) => m.content);
 
   const storeTailOnVariant = (list, targetIdx) => {
     const target = list[targetIdx];
@@ -952,6 +975,9 @@ function ChatPage() {
     let pendingCreatedAt = Date.now();
     const controller = new AbortController();
     abortRef.current = controller;
+    let timeoutId = null;
+    let timedOut = false;
+    const timeoutMs = 60000;
     setIsGenerating(true);
     try {
       safeSetTyping(true);
@@ -1479,6 +1505,11 @@ function ChatPage() {
         requestJson: JSON.stringify(body, null, 2)
       });
 
+      timeoutId = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+
       const res = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -1492,7 +1523,9 @@ function ChatPage() {
       const resolveTokens = (text, usageValue) =>
         typeof usageValue === "number" ? usageValue : estimateTokens(text);
 
-      if (!useStream) {
+      const contentType = (res.headers.get("content-type") || "").toLowerCase();
+      const shouldStream = useStream && contentType.includes("text/event-stream");
+      if (!shouldStream) {
         const rawText = await res.text();
         updateRequestLog(reqLogId, {
           responseAt: Date.now(),
@@ -1648,7 +1681,17 @@ function ChatPage() {
       const toolCallsMap = {};
       let toolTags = "";
       let streamUsageTokens;
-      if (!reader) return;
+      if (!reader) {
+        applyAssistantUpdate({
+          id: pendingId,
+          text: "No response stream",
+          tokens: pendingMsg.tokens,
+          isPending: false,
+          appendVariant: !!appendVariant,
+          createdAt: pendingCreatedAt
+        });
+        return;
+      }
 
       while (true) {
         const { done, value } = await reader.read();
@@ -1754,7 +1797,17 @@ function ChatPage() {
           body: JSON.stringify(followBody),
           signal: controller.signal
         });
-        if (!followRes.body) return;
+        if (!followRes.body) {
+          applyAssistantUpdate({
+            id: pendingId,
+            text: "No response stream",
+            tokens: pendingMsg.tokens,
+            isPending: false,
+            appendVariant: !!appendVariant,
+            createdAt: pendingCreatedAt
+          });
+          return;
+        }
         const followReader = followRes.body.getReader();
         const followDecoder = new TextDecoder("utf-8");
         let followBuffer = "";
@@ -1831,14 +1884,99 @@ function ChatPage() {
       });
     } catch (err) {
       if (err?.name === "AbortError") {
-        showToast("已停止生成");
+        showToast(timedOut ? "请求超时" : "已停止生成");
+        updateRequestLog(reqLogId, {
+          responseAt: Date.now(),
+          responseStatus: timedOut ? "timeout" : "aborted",
+          responseText: timedOut ? "请求超时" : "已停止生成"
+        });
       } else {
         showToast(err?.message || "请求失败");
+        updateRequestLog(reqLogId, {
+          responseAt: Date.now(),
+          responseStatus: "error",
+          responseText: err?.message || "请求失败"
+        });
+      }
+      if (pendingId) {
+        applyAssistantUpdate({
+          id: pendingId,
+          text: err?.message || "请求失败",
+          tokens: pendingMsg.tokens,
+          isPending: false,
+          appendVariant: !!appendVariant,
+          createdAt: pendingCreatedAt
+        });
       }
     } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
       safeSetTyping(false);
       setIsGenerating(false);
     }
+  };
+
+  const diffTextInline = (before, after) => {
+    const a = before || "";
+    const b = after || "";
+    if (!a && !b) return [];
+    if (!a) return [{ type: "add", text: b }];
+    if (!b) return [{ type: "del", text: a }];
+    const hasCJK = /[\u4e00-\u9fff]/.test(a + b);
+    const tokenize = (s) =>
+      hasCJK
+        ? s.split("")
+        : s.split(/(\s+)/).filter((t) => t.length > 0);
+    const tokensA = tokenize(a);
+    const tokensB = tokenize(b);
+    const n = tokensA.length;
+    const m = tokensB.length;
+    const dp = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
+    for (let i = 1; i <= n; i += 1) {
+      for (let j = 1; j <= m; j += 1) {
+        dp[i][j] =
+          tokensA[i - 1] === tokensB[j - 1]
+            ? dp[i - 1][j - 1] + 1
+            : Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+    const ops = [];
+    let i = n;
+    let j = m;
+    while (i > 0 && j > 0) {
+      if (tokensA[i - 1] === tokensB[j - 1]) {
+        ops.push({ type: "keep", text: tokensA[i - 1] });
+        i -= 1;
+        j -= 1;
+      } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+        ops.push({ type: "del", text: tokensA[i - 1] });
+        i -= 1;
+      } else {
+        ops.push({ type: "add", text: tokensB[j - 1] });
+        j -= 1;
+      }
+    }
+    while (i > 0) {
+      ops.push({ type: "del", text: tokensA[i - 1] });
+      i -= 1;
+    }
+    while (j > 0) {
+      ops.push({ type: "add", text: tokensB[j - 1] });
+      j -= 1;
+    }
+    ops.reverse();
+    const merged = [];
+    ops.forEach((op) => {
+      const last = merged[merged.length - 1];
+      if (last && last.type === op.type) {
+        last.text += op.text;
+      } else {
+        merged.push({ ...op });
+      }
+    });
+    return merged;
   };
 
   const renderMessageContent = (message) => {
@@ -1847,7 +1985,7 @@ function ChatPage() {
     const extracted = extractThinkAndTools(rawText);
     const baseText = extracted.cleanText;
     const thinkText = extracted.thinkText;
-    const toolParts = extracted.tools;
+    const toolParts = extracted.tools.filter((t) => t.type === "result");
     const timeText = formatDateTime(createdAt);
     const showTokens = position !== "right" && typeof tokens === "number";
     const variantCount = message?.variants?.length || 1;
@@ -1905,6 +2043,10 @@ function ChatPage() {
                       const payload = parseToolJson(t.content) || {};
                       const beforeText = payload?.before || payload?.removed?.content || "";
                       const afterText = payload?.after || payload?.content || "";
+                      const diffParts =
+                        t.name === "edit_memory"
+                          ? diffTextInline(beforeText, afterText)
+                          : [];
                       const titleMap = {
                         create_memory: "创建记忆",
                         edit_memory: "更新记忆",
@@ -1928,11 +2070,35 @@ function ChatPage() {
                               </div>
                             )}
                             {t.name === "edit_memory" && (
-                              <div className="tool-diff">
-                                {beforeText && (
-                                  <span className="tool-del">- {beforeText}</span>
+                              <div className="tool-diff-inline">
+                                {diffParts.length > 0 ? (
+                                  diffParts.map((part, partIdx) => {
+                                    if (part.type === "del") {
+                                      return (
+                                        <span className="tool-del" key={`del-${partIdx}`}>
+                                          {part.text}
+                                        </span>
+                                      );
+                                    }
+                                    if (part.type === "add") {
+                                      return (
+                                        <span className="tool-add" key={`add-${partIdx}`}>
+                                          {part.text}
+                                        </span>
+                                      );
+                                    }
+                                    return <span key={`keep-${partIdx}`}>{part.text}</span>;
+                                  })
+                                ) : (
+                                  <>
+                                    {beforeText && (
+                                      <span className="tool-del">{beforeText}</span>
+                                    )}
+                                    {afterText && (
+                                      <span className="tool-add">{afterText}</span>
+                                    )}
+                                  </>
                                 )}
-                                <span className="tool-add">+ {afterText}</span>
                               </div>
                             )}
                             {t.name === "delete_memory" && (
@@ -1962,11 +2128,13 @@ function ChatPage() {
               )}
             </div>
           )}
-          <div
-            className={`chat-bubble ${
-              position === "right" ? "chat-bubble-primary" : ""
-            }`}
-          >
+        <div
+          className={`chat-bubble ${
+            position === "right"
+              ? "bg-secondary text-secondary-content"
+              : "bg-white text-base-content"
+          }`}
+        >
             {message.isPending && !baseText && (
               <span className="loading loading-dots loading-sm" />
             )}
@@ -2146,7 +2314,7 @@ function ChatPage() {
   const editingTarget = messages.find((m) => m._id === editingId);
 
   return (
-    <div className="ChatPage">
+    <div className="ChatPage bg-base-100">
       <div
         className="navbar bg-base-100 shadow-sm app-navbar"
         onClick={(event) => {
@@ -2154,7 +2322,7 @@ function ChatPage() {
           if (
             target instanceof Element &&
             target.closest(
-              "button,a,input,select,textarea,.dropdown-content,.chat-model-sub-btn"
+              "button,a,input,select,textarea,.dropdown-content,.chat-model-sub-btn,.dropdown"
             )
           ) {
             return;
