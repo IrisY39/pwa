@@ -8,6 +8,7 @@ body,
   height: 100%;
   margin: 0;
   padding: 0;
+  background: #f7f8fb;
   scrollbar-width: none;
   -ms-overflow-style: none;
   overflow-x: hidden;
@@ -195,6 +196,7 @@ body::-webkit-scrollbar {
   min-height: 100%;
   width: 100%;
   max-width: 100vw;
+  background: #f7f8fb;
 }
 
 .RouteView {
@@ -202,6 +204,7 @@ body::-webkit-scrollbar {
   min-height: 100%;
   width: 100%;
   max-width: 100vw;
+  background: #f7f8fb;
 }
 
 .RouteView.is-active {
@@ -339,6 +342,7 @@ body::-webkit-scrollbar {
 html,
 body {
   overscroll-behavior: none;
+  background: #f7f8fb;
   padding-top: 0 !important;
   padding-bottom: 0 !important;
 }
@@ -1190,6 +1194,18 @@ pre.tool-card-body {
   width: 100%;
   margin-top: 6px;
   border-radius: 18px;
+}
+
+.session-import-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.session-import-hint {
+  font-size: 12px;
+  color: #6b7280;
 }
 
 .session-search-input:focus-within {

@@ -21,11 +21,86 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { createClient } from "@supabase/supabase-js";
 
 const AVATAR_USER =
   "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'><rect width='96' height='96' rx='20' fill='%231f2a44'/><circle cx='48' cy='38' r='18' fill='%235de4c7'/><rect x='22' y='58' width='52' height='22' rx='11' fill='%2379a8ff'/></svg>";
 const AVATAR_ASSISTANT =
   "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'><rect width='96' height='96' rx='20' fill='%231a2228'/><circle cx='48' cy='40' r='18' fill='%2379a8ff'/><rect x='20' y='60' width='56' height='20' rx='10' fill='%235de4c7'/></svg>";
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
+const SUPABASE_PUBLISHABLE_KEY =
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
+const supabase =
+  SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
+    : null;
+
+const isSupabaseEnabled = () => !!supabase;
+
+const mapSessionForDb = (session) => ({
+  id: String(session.id),
+  title: session.title || "新对话",
+  updated_at: new Date(session.updatedAt || Date.now()).toISOString(),
+  data: session
+});
+
+const fetchSessionsFromSupabase = async () => {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("chat_sessions")
+    .select("id,title,updated_at,data")
+    .order("updated_at", { ascending: false });
+  if (error) {
+    console.warn("supabase load sessions failed", error);
+    return [];
+  }
+  return (data || []).map((row) => {
+    const fallbackUpdated =
+      typeof row.updated_at === "string"
+        ? Date.parse(row.updated_at)
+        : Date.now();
+    const updatedAt = Number.isFinite(fallbackUpdated)
+      ? fallbackUpdated
+      : Date.now();
+    if (row.data && typeof row.data === "object") {
+      return {
+        ...row.data,
+        id: row.id,
+        title: row.title || row.data.title || "新对话",
+        updatedAt: row.data.updatedAt ?? updatedAt
+      };
+    }
+    return {
+      id: row.id,
+      title: row.title || "新对话",
+      messages: [],
+      updatedAt
+    };
+  });
+};
+
+const syncSessionsToSupabase = async (sessions) => {
+  if (!supabase) return;
+  const list = Array.isArray(sessions) ? sessions : [];
+  if (!list.length) return;
+  const payload = list.map(mapSessionForDb);
+  const { error } = await supabase
+    .from("chat_sessions")
+    .upsert(payload, { onConflict: "id" });
+  if (error) {
+    console.warn("supabase sync sessions failed", error);
+  }
+};
+
+let supabaseSyncTimer = null;
+const queueSupabaseSync = (sessions) => {
+  if (!supabase) return;
+  if (supabaseSyncTimer) clearTimeout(supabaseSyncTimer);
+  supabaseSyncTimer = setTimeout(() => {
+    syncSessionsToSupabase(sessions);
+  }, 800);
+};
 
 const estimateTokens = (text) => {
   if (!text) return 0;
@@ -204,6 +279,7 @@ const writeSessions = (sessions) => {
   try {
     localStorage.setItem(SESSION_KEY, JSON.stringify(sessions));
   } catch {}
+  queueSupabaseSync(sessions);
 };
 
 const notifySessionsUpdate = () => {
@@ -597,6 +673,32 @@ function ChatPage() {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled()) return;
+    let cancelled = false;
+    (async () => {
+      const remote = await fetchSessionsFromSupabase();
+      if (cancelled) return;
+      if (remote.length) {
+        writeSessions(remote);
+        setSessions(remote);
+        const nextId = readCurrentSessionId() || remote[0]?.id || null;
+        if (nextId) {
+          setCurrentSessionId(nextId);
+          writeCurrentSessionId(nextId);
+        }
+        return;
+      }
+      const local = readSessions();
+      if (local.length) {
+        queueSupabaseSync(local);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (!window.location.hash.startsWith("#/chat")) return;
@@ -2314,7 +2416,7 @@ function ChatPage() {
   const editingTarget = messages.find((m) => m._id === editingId);
 
   return (
-    <div className="ChatPage bg-base-100">
+    <div className="ChatPage bg-[#f7f8fb]">
       <div
         className="navbar bg-base-100 shadow-sm app-navbar"
         onClick={(event) => {
@@ -3597,6 +3699,28 @@ function SessionsPage() {
   const [renameValue, setRenameValue] = useState("");
   const [deleteSessionId, setDeleteSessionId] = useState(null);
   const [query, setQuery] = useState("");
+  const [importHint, setImportHint] = useState("");
+  const importInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled()) return;
+    let cancelled = false;
+    (async () => {
+      const remote = await fetchSessionsFromSupabase();
+      if (cancelled) return;
+      if (remote.length) {
+        writeSessions(remote);
+        setSessions(remote);
+        notifySessionsUpdate();
+      } else {
+        const local = readSessions();
+        if (local.length) queueSupabaseSync(local);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const pressTimerRef = useRef(null);
 
   const refresh = () => setSessions(readSessions());
@@ -3611,6 +3735,121 @@ function SessionsPage() {
     return () =>
       window.removeEventListener("sessions:update", onSessionsUpdate);
   }, []);
+
+  const isMessageLike = (item) =>
+    item &&
+    typeof item === "object" &&
+    (item.role ||
+      item.position ||
+      item.content ||
+      item.text ||
+      item.message ||
+      item.value);
+
+  const normalizeImportedMessages = (list) => {
+    if (!Array.isArray(list)) return [];
+    return list
+      .map((m) => {
+        if (!m || typeof m !== "object") return null;
+        const role =
+          m.role ||
+          (m.position === "right" ? "user" : m.position === "left" ? "assistant" : "");
+        if (!role || (role !== "user" && role !== "assistant")) return null;
+        const text =
+          m.content?.text ??
+          (typeof m.content === "string" ? m.content : "") ??
+          m.text ??
+          m.message ??
+          m.value ??
+          "";
+        const createdRaw = m.createdAt || m.created_at || m.timestamp || m.time;
+        const createdAt =
+          typeof createdRaw === "number"
+            ? createdRaw
+            : Date.parse(createdRaw) || Date.now();
+        return ensureMessageId(
+          buildMessage({
+            role,
+            text: String(text),
+            tokens: role === "assistant" ? estimateTokens(String(text)) : 0,
+            createdAt
+          })
+        );
+      })
+      .filter(Boolean);
+  };
+
+  const normalizeImportedSessions = (raw) => {
+    if (!raw) return [];
+    let candidates = [];
+    if (Array.isArray(raw)) {
+      const allMsgs = raw.every((item) => isMessageLike(item));
+      if (allMsgs) {
+        candidates = [{ messages: raw }];
+      } else {
+        candidates = raw;
+      }
+    } else if (raw.sessions && Array.isArray(raw.sessions)) {
+      candidates = raw.sessions;
+    } else if (raw.messages && Array.isArray(raw.messages)) {
+      candidates = [{ messages: raw.messages, title: raw.title }];
+    } else {
+      return [];
+    }
+
+    const now = Date.now();
+    return candidates
+      .map((s, idx) => {
+        if (!s) return null;
+        const msgs = normalizeImportedMessages(s.messages || s);
+        if (!msgs.length) return null;
+        const last = msgs[msgs.length - 1];
+        const updatedAt = last?.createdAt || now;
+        return {
+          id: String(s.id || crypto?.randomUUID?.() || `${now}-${idx}`),
+          title: s.title || s.name || `导入对话 ${idx + 1}`,
+          messages: msgs,
+          updatedAt
+        };
+      })
+      .filter(Boolean);
+  };
+
+  const handleImportFile = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result || "");
+        const parsed = JSON.parse(text);
+        const imported = normalizeImportedSessions(parsed);
+        if (!imported.length) {
+          setImportHint("未识别到可导入的聊天记录");
+          return;
+        }
+        const existing = readSessions();
+        const existingIds = new Set(existing.map((s) => String(s.id)));
+        const merged = [
+          ...imported.map((s) =>
+            existingIds.has(String(s.id))
+              ? { ...s, id: crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}` }
+              : s
+          ),
+          ...existing
+        ];
+        setSessions(merged);
+        writeSessions(merged);
+        notifySessionsUpdate();
+        setImportHint(`已导入 ${imported.length} 个对话`);
+      } catch (err) {
+        setImportHint("导入失败：JSON 格式不正确");
+      } finally {
+        if (importInputRef.current) importInputRef.current.value = "";
+      }
+    };
+    reader.readAsText(file, "utf-8");
+  };
 
   const handleDelete = (id) => {
     const next = sessions.filter((s) => s.id !== id);
@@ -3750,6 +3989,23 @@ function SessionsPage() {
             onChange={(e) => setQuery(e.target.value)}
           />
         </label>
+        <div className="session-import-row">
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => importInputRef.current?.click()}
+          >
+            导入聊天记录（JSON）
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            onChange={handleImportFile}
+            style={{ display: "none" }}
+          />
+          {importHint && <span className="session-import-hint">{importHint}</span>}
+        </div>
         <div className="session-list">
           {filteredSessions
             .slice()
