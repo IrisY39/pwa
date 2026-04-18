@@ -422,20 +422,7 @@ function ChatPage() {
   });
   const [chatModelId, setChatModelId] = useState(() => readSetting("api_model"));
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const initialMessages = useMemo(
-    () => [
-      buildMessage({
-        role: "assistant",
-        text: "你好！在这里输入你的问题。",
-        tokens: estimateTokens("你好！在这里输入你的问题。"),
-        avatar: assistantAvatar
-      })
-    ],
-    [assistantAvatar]
-  );
-  const [messages, setMessages] = useState(() =>
-    initialMessages.map(ensureMessageId)
-  );
+  const [messages, setMessages] = useState(() => []);
   const appendMsg = (msg) =>
     setMessages((prev) => [...prev, ensureMessageId(msg)]);
   const updateMsg = (id, patch) =>
@@ -653,13 +640,21 @@ function ChatPage() {
   const suppressSaveRef = useRef(false);
   const atBottomRef = useRef(true);
   const suppressAutoScrollRef = useRef(false);
+  const isAutoDraftSession = (session) =>
+    !!session &&
+    (session.title || "新对话") === "新对话" &&
+    (!Array.isArray(session.messages) || session.messages.length === 0);
   const [sessions, setSessions] = useState(() => {
     const existing = readSessions();
-    if (existing.length) return existing;
+    const cleaned = existing.filter((s) => !isAutoDraftSession(s));
+    if (cleaned.length !== existing.length) {
+      writeSessions(cleaned);
+    }
+    if (cleaned.length) return cleaned;
     const first = {
       id: crypto?.randomUUID?.() || String(Date.now()),
       title: "新对话",
-      messages: cloneMessages(initialMessages),
+      messages: [],
       updatedAt: Date.now()
     };
     writeSessions([first]);
@@ -673,6 +668,29 @@ function ChatPage() {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  const removeEmptySession = (sessionId) => {
+    if (!sessionId) return;
+    const current = readSessions();
+    const target = current.find((s) => s.id === sessionId);
+    if (!isAutoDraftSession(target)) return;
+    const next = current.filter((s) => s.id !== sessionId);
+    setSessions(next);
+    writeSessions(next);
+    notifySessionsUpdate();
+    const fallbackId = next[0]?.id || null;
+    if (currentSessionId === sessionId) {
+      setCurrentSessionId(fallbackId);
+      writeCurrentSessionId(fallbackId || "");
+      if (!fallbackId) {
+        suppressSaveRef.current = true;
+        resetList([]);
+        setTimeout(() => {
+          suppressSaveRef.current = false;
+        }, 0);
+      }
+    }
+  };
 
   useEffect(() => {
     if (!isSupabaseEnabled()) return;
@@ -823,6 +841,15 @@ function ChatPage() {
   }, []);
 
   useEffect(() => {
+    const onLeaveChat = () => {
+      if (window.location.hash.startsWith("#/chat")) return;
+      removeEmptySession(currentSessionId);
+    };
+    window.addEventListener("hashchange", onLeaveChat);
+    return () => window.removeEventListener("hashchange", onLeaveChat);
+  }, [currentSessionId]);
+
+  useEffect(() => {
     if (!window.location.hash.startsWith("#/chat")) return;
     triggerAutoScroll();
   }, [messages]);
@@ -951,7 +978,7 @@ function ChatPage() {
     const next = {
       id: crypto?.randomUUID?.() || String(Date.now()),
       title: "新对话",
-      messages: cloneMessages(initialMessages),
+      messages: [],
       updatedAt: Date.now()
     };
     const updated = [next, ...(sessionsRef.current || [])];
@@ -2245,6 +2272,37 @@ function ChatPage() {
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
+                  pre: ({ children }) => {
+                    const child = Array.isArray(children) ? children[0] : children;
+                    const className = child?.props?.className || "";
+                    const match = /language-([\w-]+)/.exec(className);
+                    const lang = (match?.[1] || "code").toLowerCase();
+                    const codeChildren = child?.props?.children ?? children;
+                    return (
+                      <div className="msg-codeblock">
+                        <div className="msg-codeblock-head">
+                          <span>{lang}</span>
+                        </div>
+                        <pre>
+                          <code className={className}>{codeChildren}</code>
+                        </pre>
+                      </div>
+                    );
+                  },
+                  code: ({ inline, className, children, ...props }) => {
+                    if (inline) {
+                      return (
+                        <code className={className} {...props}>
+                          {children}
+                        </code>
+                      );
+                    }
+                    return (
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
+                    );
+                  },
                   table: ({ node, ...props }) => (
                     <div className="md-table">
                       <table {...props} />
