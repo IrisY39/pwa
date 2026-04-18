@@ -2850,6 +2850,11 @@ function ToolsPage() {
   const [tab, setTab] = useState("api");
   const [logs, setLogs] = useState(() => readLogs());
   const [requestLogs, setRequestLogs] = useState(() => readRequestLogs());
+  const [supabaseStatus, setSupabaseStatus] = useState({
+    loading: false,
+    ok: null,
+    text: ""
+  });
   const [assistantName, setAssistantName] = useState(() =>
     readSetting("opt_assistant_name")
   );
@@ -2886,6 +2891,55 @@ function ToolsPage() {
       setLogs(readLogs());
       setRequestLogs(readRequestLogs());
     }
+  }, [tab]);
+
+  const checkSupabaseConnection = async () => {
+    if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
+      setSupabaseStatus({
+        loading: false,
+        ok: false,
+        text: "未配置 VITE_SUPABASE_URL 或 VITE_SUPABASE_PUBLISHABLE_KEY"
+      });
+      return;
+    }
+    if (!supabase) {
+      setSupabaseStatus({
+        loading: false,
+        ok: false,
+        text: "Supabase 客户端初始化失败"
+      });
+      return;
+    }
+    setSupabaseStatus({ loading: true, ok: null, text: "正在检测..." });
+    try {
+      const { count, error } = await supabase
+        .from("chat_sessions")
+        .select("id", { count: "exact", head: true });
+      if (error) {
+        setSupabaseStatus({
+          loading: false,
+          ok: false,
+          text: `连接失败：${error.message}`
+        });
+        return;
+      }
+      setSupabaseStatus({
+        loading: false,
+        ok: true,
+        text: `连接成功，chat_sessions 当前 ${count ?? 0} 条`
+      });
+    } catch (err) {
+      setSupabaseStatus({
+        loading: false,
+        ok: false,
+        text: `连接失败：${err?.message || String(err)}`
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (tab !== "logs") return;
+    checkSupabaseConnection();
   }, [tab]);
 
   useEffect(() => {
@@ -3611,6 +3665,23 @@ function ToolsPage() {
         {tab === "logs" && (
           <div className="page-card">
             <div className="page-card-title">请求日志</div>
+            <div className="form-row">
+              <button
+                className="form-btn"
+                type="button"
+                onClick={checkSupabaseConnection}
+                disabled={supabaseStatus.loading}
+              >
+                {supabaseStatus.loading ? "检测中..." : "检测 Supabase 连接"}
+              </button>
+              <div className="page-card-desc">
+                {supabaseStatus.ok === true
+                  ? `Supabase: 已连接 · ${supabaseStatus.text}`
+                  : supabaseStatus.ok === false
+                  ? `Supabase: 未连接 · ${supabaseStatus.text}`
+                  : "Supabase: 未检测"}
+              </div>
+            </div>
             <div className="form-row">
               <button
                 className="form-btn"
