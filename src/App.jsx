@@ -37,45 +37,332 @@ const supabase =
     : null;
 
 const isSupabaseEnabled = () => !!supabase;
+const APP_SETTINGS_ROW_ID = "default";
+const SYNCED_SETTING_KEYS = [
+  "api_url",
+  "api_key",
+  "api_model",
+  "opt_added_models",
+  "opt_temperature",
+  "opt_top_p",
+  "opt_max_tokens",
+  "opt_context_limit",
+  "opt_stream",
+  "opt_assistant_name",
+  "opt_assistant_avatar",
+  "opt_user_avatar",
+  "opt_system_prompt",
+  "opt_message_template",
+  "opt_search_enabled",
+  "opt_mcp_enabled",
+  "opt_memory_enabled",
+  "opt_memory_list",
+  "mcp_url",
+  "mcp_api_key",
+  "web_search_url",
+  "web_search_api_key"
+];
+const SYNCED_SETTING_KEY_SET = new Set(SYNCED_SETTING_KEYS);
+let settingsSyncTimer = null;
+let suppressRemoteSettingSync = false;
+let settingsHydratedOnce = false;
+let settingsHydratePromise = null;
 
-const mapSessionForDb = (session) => ({
-  id: String(session.id),
-  title: session.title || "新对话",
-  updated_at: new Date(session.updatedAt || Date.now()).toISOString(),
-  data: session
-});
+const emitSettingsUpdate = () => {
+  try {
+    window.dispatchEvent(new Event("settings:update"));
+  } catch {}
+};
+
+const collectSyncedSettingsFromLocal = () => {
+  const out = {};
+  SYNCED_SETTING_KEYS.forEach((key) => {
+    const value = localStorage.getItem(key);
+    if (value !== null) out[key] = value;
+  });
+  return out;
+};
+
+const applySyncedSettingsToLocal = (settings) => {
+  if (!settings || typeof settings !== "object") return;
+  suppressRemoteSettingSync = true;
+  try {
+    Object.entries(settings).forEach(([key, value]) => {
+      if (!SYNCED_SETTING_KEY_SET.has(key)) return;
+      if (value == null) {
+        localStorage.removeItem(key);
+      } else {
+        localStorage.setItem(key, String(value));
+      }
+    });
+  } catch {}
+  suppressRemoteSettingSync = false;
+  emitModelsUpdate();
+  window.dispatchEvent(new Event("memory:update"));
+  emitSettingsUpdate();
+};
+
+const syncSettingsToSupabase = async () => {
+  if (!supabase) return;
+  try {
+    const data = collectSyncedSettingsFromLocal();
+    const { error } = await supabase.from("app_settings").upsert(
+      {
+        id: APP_SETTINGS_ROW_ID,
+        updated_at: new Date().toISOString(),
+        data
+      },
+      { onConflict: "id" }
+    );
+    if (error) {
+      console.warn("supabase sync app settings failed", error);
+    }
+  } catch (err) {
+    console.warn("supabase sync app settings exception", err);
+  }
+};
+
+const queueSettingsSync = () => {
+  if (!supabase || suppressRemoteSettingSync) return;
+  if (settingsSyncTimer) clearTimeout(settingsSyncTimer);
+  settingsSyncTimer = setTimeout(() => {
+    syncSettingsToSupabase();
+  }, 800);
+};
+
+const hydrateSettingsFromSupabase = async () => {
+  if (!supabase) return;
+  if (settingsHydratedOnce) return;
+  if (settingsHydratePromise) return settingsHydratePromise;
+  settingsHydratePromise = (async () => {
+    const { data, error } = await supabase
+      .from("app_settings")
+      .select("data")
+      .eq("id", APP_SETTINGS_ROW_ID)
+      .maybeSingle();
+    if (error) {
+      console.warn("supabase load app settings failed", error);
+      settingsHydratedOnce = true;
+      settingsHydratePromise = null;
+      return;
+    }
+    if (data?.data && typeof data.data === "object") {
+      applySyncedSettingsToLocal(data.data);
+    } else {
+      queueSettingsSync();
+    }
+    settingsHydratedOnce = true;
+    settingsHydratePromise = null;
+  })();
+  return settingsHydratePromise;
+};
+
+const normalizeExternalRole = (role) => {
+  const value = String(role || "").toLowerCase().trim();
+  if (!value) return "";
+  if (value === "user" || value === "human") return "user";
+  if (
+    value === "assistant" ||
+    value === "bot" ||
+    value === "model" ||
+    value === "ai"
+  ) {
+    return "assistant";
+  }
+  return "";
+};
+
+const parseMessageText = (content) => {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item?.type === "text" && typeof item?.text === "string") return item.text;
+        if (typeof item?.text === "string") return item.text;
+        return "";
+      })
+      .join("")
+      .trim();
+  }
+  if (content && typeof content === "object") {
+    if (typeof content.text === "string") return content.text;
+    if (typeof content.content === "string") return content.content;
+  }
+  return "";
+};
+
+const normalizeSessionMessages = (list) => {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((m) => {
+      if (!m || typeof m !== "object") return null;
+      if (m.position === "left" || m.position === "right") {
+        return ensureMessageId(m);
+      }
+      const role = normalizeExternalRole(m.role);
+      if (!role) return null;
+      const text = parseMessageText(
+        m.content ?? m.text ?? m.message ?? m.value ?? ""
+      );
+      const rawTime = m.timestamp ?? m.createdAt ?? m.created_at ?? m.time;
+      const createdAt =
+        typeof rawTime === "number" ? rawTime : Date.parse(rawTime) || Date.now();
+      const model =
+        role === "assistant"
+          ? String(m.model || m.assistant_model || m.model_id || "").trim()
+          : "";
+      return ensureMessageId(
+        buildMessage({
+          role,
+          text: String(text || ""),
+          tokens: role === "assistant" ? estimateTokens(String(text || "")) : 0,
+          createdAt,
+          model
+        })
+      );
+    })
+    .filter(Boolean);
+};
+
+const mapSessionMetaForDb = (session, includeCreatedAt = true) => {
+  const createdAt = session.createdAt || session.updatedAt || Date.now();
+  const payload = {
+    id: String(session.id),
+    title: session.title || "新对话",
+    updated_at: new Date(session.updatedAt || Date.now()).toISOString()
+  };
+  if (includeCreatedAt) {
+    payload.created_at = new Date(createdAt).toISOString();
+  }
+  return payload;
+};
+
+const mapMessagesForDb = (session) => {
+  const sessionId = String(session.id);
+  return (Array.isArray(session.messages) ? session.messages : [])
+    .map((m, idx) => {
+      const isUser = m?.position === "right";
+      const role = isUser ? "human" : "assistant";
+      const text = String(m?.content?.text || "");
+      if (!text) return null;
+      const createdAt = m?.createdAt ? Number(m.createdAt) : Date.now();
+      return {
+        id: String(m?._id || `${sessionId}_${idx}`),
+        session_id: sessionId,
+        role,
+        content: text,
+        model: role === "assistant" ? String(m?.model || "") : null,
+        timestamp: new Date(createdAt).toISOString(),
+        seq: idx
+      };
+    })
+    .filter(Boolean);
+};
+
+const fetchSessionsRows = async () => {
+  let data = null;
+  let error = null;
+  ({ data, error } = await supabase
+    .from("chat_sessions")
+    .select("id,title,created_at,updated_at,data")
+    .order("updated_at", { ascending: false }));
+  if (error && String(error.message || "").includes("created_at")) {
+    ({ data, error } = await supabase
+      .from("chat_sessions")
+      .select("id,title,updated_at,data")
+      .order("updated_at", { ascending: false }));
+  }
+  if (error && String(error.message || "").includes("data")) {
+    ({ data, error } = await supabase
+      .from("chat_sessions")
+      .select("id,title,created_at,updated_at")
+      .order("updated_at", { ascending: false }));
+  }
+  return { data, error };
+};
+
+const fetchMessagesRows = async () => {
+  let data = null;
+  let error = null;
+  ({ data, error } = await supabase
+    .from("chat_messages")
+    .select("id,session_id,role,content,model,timestamp,seq")
+    .order("session_id", { ascending: true })
+    .order("seq", { ascending: true })
+    .order("timestamp", { ascending: true }));
+  if (error && String(error.message || "").includes("seq")) {
+    ({ data, error } = await supabase
+      .from("chat_messages")
+      .select("id,session_id,role,content,model,timestamp")
+      .order("session_id", { ascending: true })
+      .order("timestamp", { ascending: true }));
+  }
+  return { data, error };
+};
 
 const fetchSessionsFromSupabase = async () => {
   if (!supabase) return [];
-  const { data, error } = await supabase
-    .from("chat_sessions")
-    .select("id,title,updated_at,data")
-    .order("updated_at", { ascending: false });
-  if (error) {
-    console.warn("supabase load sessions failed", error);
+  const { data: sessionRows, error: sessionError } = await fetchSessionsRows();
+  if (sessionError) {
+    console.warn("supabase load sessions failed", sessionError);
     return [];
   }
-  return (data || []).map((row) => {
-    const fallbackUpdated =
-      typeof row.updated_at === "string"
-        ? Date.parse(row.updated_at)
-        : Date.now();
-    const updatedAt = Number.isFinite(fallbackUpdated)
-      ? fallbackUpdated
+  const { data: msgRows, error: msgError } = await fetchMessagesRows();
+  const hasMessageTable = !msgError;
+  if (msgError) {
+    console.warn("supabase load chat_messages failed, fallback to legacy data", msgError);
+  }
+
+  const messagesBySession = new Map();
+  if (hasMessageTable) {
+    (msgRows || []).forEach((row) => {
+      const sid = String(row.session_id || "");
+      if (!sid) return;
+      const list = messagesBySession.get(sid) || [];
+      list.push(
+        ensureMessageId(
+          buildMessage({
+            role: normalizeExternalRole(row.role) || "assistant",
+            text: parseMessageText(row.content || ""),
+            tokens:
+              normalizeExternalRole(row.role) === "assistant"
+                ? estimateTokens(parseMessageText(row.content || ""))
+                : 0,
+            createdAt: Date.parse(row.timestamp) || Date.now(),
+            model: String(row.model || "")
+          })
+        )
+      );
+      messagesBySession.set(sid, list);
+    });
+  }
+
+  return (sessionRows || []).map((row) => {
+    const fallbackCreated =
+      typeof row.created_at === "string" ? Date.parse(row.created_at) : Date.now();
+    const createdAtFromColumn = Number.isFinite(fallbackCreated)
+      ? fallbackCreated
       : Date.now();
-    if (row.data && typeof row.data === "object") {
-      return {
-        ...row.data,
-        id: row.id,
-        title: row.title || row.data.title || "新对话",
-        updatedAt: row.data.updatedAt ?? updatedAt
-      };
-    }
+    const fallbackUpdated =
+      typeof row.updated_at === "string" ? Date.parse(row.updated_at) : Date.now();
+    const updatedAt = Number.isFinite(fallbackUpdated) ? fallbackUpdated : Date.now();
+    const sessionId = String(row.id);
+    const rowData = row.data && typeof row.data === "object" ? row.data : {};
+    const legacyMessages = normalizeSessionMessages(rowData.messages || []);
+    const normalizedMessages =
+      messagesBySession.get(sessionId) || legacyMessages || [];
     return {
-      id: row.id,
-      title: row.title || "新对话",
-      messages: [],
-      updatedAt
+      ...rowData,
+      id: sessionId,
+      title: row.title || rowData.title || "新对话",
+      createdAt:
+        rowData.createdAt ??
+        rowData.created_at ??
+        createdAtFromColumn ??
+        updatedAt,
+      updatedAt,
+      messages: normalizedMessages
     };
   });
 };
@@ -84,12 +371,62 @@ const syncSessionsToSupabase = async (sessions) => {
   if (!supabase) return;
   const list = Array.isArray(sessions) ? sessions : [];
   if (!list.length) return;
-  const payload = list.map(mapSessionForDb);
+
+  const sessionPayload = list.map((s) => mapSessionMetaForDb(s, true));
+  let { error: sessionError } = await supabase
+    .from("chat_sessions")
+    .upsert(sessionPayload, { onConflict: "id" });
+  if (sessionError && String(sessionError.message || "").includes("created_at")) {
+    const fallbackPayload = list.map((s) => mapSessionMetaForDb(s, false));
+    ({ error: sessionError } = await supabase
+      .from("chat_sessions")
+      .upsert(fallbackPayload, { onConflict: "id" }));
+  }
+  if (sessionError) {
+    console.warn("supabase sync chat_sessions failed", sessionError);
+    return;
+  }
+
+  const sessionIds = list.map((s) => String(s.id));
+  const { error: deleteMsgError } = await supabase
+    .from("chat_messages")
+    .delete()
+    .in("session_id", sessionIds);
+  if (
+    deleteMsgError &&
+    !String(deleteMsgError.message || "").includes("chat_messages")
+  ) {
+    console.warn("supabase clear chat_messages failed", deleteMsgError);
+  }
+
+  const messagePayload = list.flatMap((s) => mapMessagesForDb(s));
+  if (!messagePayload.length) return;
+  const { error: messageError } = await supabase
+    .from("chat_messages")
+    .upsert(messagePayload, { onConflict: "id" });
+  if (messageError) {
+    console.warn("supabase sync chat_messages failed", messageError);
+  }
+};
+
+const deleteSessionFromSupabase = async (sessionId) => {
+  if (!supabase || !sessionId) return;
+  const { error: msgError } = await supabase
+    .from("chat_messages")
+    .delete()
+    .eq("session_id", String(sessionId));
+  if (
+    msgError &&
+    !String(msgError.message || "").includes("chat_messages")
+  ) {
+    console.warn("supabase delete session messages failed", msgError);
+  }
   const { error } = await supabase
     .from("chat_sessions")
-    .upsert(payload, { onConflict: "id" });
+    .delete()
+    .eq("id", String(sessionId));
   if (error) {
-    console.warn("supabase sync sessions failed", error);
+    console.warn("supabase delete session failed", error);
   }
 };
 
@@ -158,6 +495,10 @@ const writeSetting = (key, value) => {
   try {
     localStorage.setItem(key, value);
   } catch {}
+  if (SYNCED_SETTING_KEY_SET.has(key)) {
+    queueSettingsSync();
+    emitSettingsUpdate();
+  }
 };
 
 const normalizeBaseUrl = (url) => {
@@ -272,6 +613,8 @@ const readSessions = () => {
 const cloneSessions = (list) =>
   (Array.isArray(list) ? list : []).map((s) => ({
     ...s,
+    createdAt: s.createdAt || s.updatedAt || Date.now(),
+    updatedAt: s.updatedAt || s.createdAt || Date.now(),
     messages: cloneMessages(s.messages || [])
   }));
 
@@ -377,6 +720,7 @@ const buildMessage = ({
   tokens,
   avatar,
   createdAt,
+  model,
   variants,
   isPending
 }) => ({
@@ -389,6 +733,7 @@ const buildMessage = ({
   createdAt: createdAt ?? Date.now(),
   hasTime: false,
   tokens,
+  model: role === "assistant" ? model || "" : undefined,
   variants,
   isPending: !!isPending
 });
@@ -650,15 +995,7 @@ function ChatPage() {
     if (cleaned.length !== existing.length) {
       writeSessions(cleaned);
     }
-    if (cleaned.length) return cleaned;
-    const first = {
-      id: crypto?.randomUUID?.() || String(Date.now()),
-      title: "新对话",
-      messages: [],
-      updatedAt: Date.now()
-    };
-    writeSessions([first]);
-    return [first];
+    return cleaned;
   });
   const [currentSessionId, setCurrentSessionId] = useState(
     () => readCurrentSessionId() || readSessions()[0]?.id || null
@@ -690,6 +1027,7 @@ function ChatPage() {
         }, 0);
       }
     }
+    deleteSessionFromSupabase(sessionId);
   };
 
   useEffect(() => {
@@ -821,12 +1159,25 @@ function ChatPage() {
     const onHashChange = () => {
       if (!window.location.hash.startsWith("#/chat")) return;
       const storedId = readCurrentSessionId();
-      if (storedId && storedId !== currentSessionId) {
-        setCurrentSessionId(storedId);
-      }
       const storedSessions = readSessions();
       if (storedSessions.length) {
         setSessions(storedSessions);
+      }
+      const fallbackId = storedSessions[0]?.id || null;
+      const nextId = storedId || fallbackId;
+      const targetSession = nextId
+        ? storedSessions.find((s) => s.id === nextId) || null
+        : null;
+      if (targetSession) {
+        suppressSaveRef.current = true;
+        resetList(cloneMessages(targetSession.messages || []));
+        setTimeout(() => {
+          suppressSaveRef.current = false;
+        }, 0);
+      }
+      if (nextId && nextId !== currentSessionId) {
+        setCurrentSessionId(nextId);
+        writeCurrentSessionId(nextId);
       }
       setAssistantName(readSetting("opt_assistant_name") || "Kelivo Chat");
       setChatReady(false);
@@ -926,8 +1277,16 @@ function ChatPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!currentSessionId) return;
+  useLayoutEffect(() => {
+    if (!currentSessionId) {
+      suppressSaveRef.current = true;
+      resetList([]);
+      writeCurrentSessionId("");
+      setTimeout(() => {
+        suppressSaveRef.current = false;
+      }, 0);
+      return;
+    }
     const storedSessions = readSessions();
     const safeSessions = cloneSessions(storedSessions);
     if (safeSessions.length) {
@@ -948,6 +1307,14 @@ function ChatPage() {
   }, [currentSessionId]);
 
   useEffect(() => {
+    if (currentSessionId) return;
+    const fallbackId = sessions[0]?.id || null;
+    if (!fallbackId) return;
+    setCurrentSessionId(fallbackId);
+    writeCurrentSessionId(fallbackId);
+  }, [currentSessionId, sessions]);
+
+  useEffect(() => {
     if (!currentSessionId) return;
     if (suppressSaveRef.current) return;
     const firstUser = messages.find(
@@ -965,6 +1332,7 @@ function ChatPage() {
       return {
         ...s,
         title,
+        createdAt: s.createdAt || s.updatedAt || Date.now(),
         messages: cloneMessages(messages),
         updatedAt: getLastMessageTime(messages)
       };
@@ -974,24 +1342,41 @@ function ChatPage() {
     notifySessionsUpdate();
   }, [messages, currentSessionId]);
 
-  const handleNewSession = () => {
-    const next = {
-      id: crypto?.randomUUID?.() || String(Date.now()),
-      title: "新对话",
-      messages: [],
-      updatedAt: Date.now()
-    };
-    const updated = [next, ...(sessionsRef.current || [])];
+  const createEmptySession = () => ({
+    id: crypto?.randomUUID?.() || String(Date.now()),
+    title: "新对话",
+    messages: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  });
+
+  const activateSession = (session) => {
+    if (!session) return;
+    const updated = [session, ...(sessionsRef.current || [])];
     setSessions(updated);
     writeSessions(updated);
     notifySessionsUpdate();
     suppressSaveRef.current = true;
-    setCurrentSessionId(next.id);
-    writeCurrentSessionId(next.id);
-    resetList(cloneMessages(next.messages));
+    setCurrentSessionId(session.id);
+    writeCurrentSessionId(session.id);
+    resetList([]);
     setTimeout(() => {
       suppressSaveRef.current = false;
     }, 0);
+  };
+
+  const ensureCurrentSessionId = () => {
+    if (currentSessionId) return currentSessionId;
+    const next = createEmptySession();
+    activateSession(next);
+    return next.id;
+  };
+
+  const handleNewSession = () => {
+    const next = {
+      ...createEmptySession()
+    };
+    activateSession(next);
   };
 
   const handleAction = (msg, action) => {
@@ -1610,6 +1995,7 @@ function ChatPage() {
       if (typeof temperature === "number") body.temperature = temperature;
       if (typeof topP === "number") body.top_p = topP;
       if (typeof maxTokens === "number") body.max_tokens = maxTokens;
+      const assistantModel = String(body.model || chatModelId || "").trim();
 
       const pendingMsg = ensureMessageId(
         buildMessage({
@@ -1618,12 +2004,15 @@ function ChatPage() {
           tokens: 0,
           avatar: assistantAvatar,
           createdAt: pendingCreatedAt,
+          model: assistantModel,
           isPending: true
         })
       );
       if (!pendingId) {
         appendMsg(pendingMsg);
         pendingId = pendingMsg._id;
+      } else if (assistantModel) {
+        updateMsg(pendingId, { model: assistantModel });
       }
 
       const reqLogId = crypto?.randomUUID?.() || String(Date.now());
@@ -2455,6 +2844,7 @@ function ChatPage() {
       showToast("请选择聊天模型");
       return;
     }
+    ensureCurrentSessionId();
     appendMsg(
       buildMessage({
         role: "user",
@@ -3875,38 +4265,7 @@ function SessionsPage() {
       item.message ||
       item.value);
 
-  const normalizeImportedMessages = (list) => {
-    if (!Array.isArray(list)) return [];
-    return list
-      .map((m) => {
-        if (!m || typeof m !== "object") return null;
-        const role =
-          m.role ||
-          (m.position === "right" ? "user" : m.position === "left" ? "assistant" : "");
-        if (!role || (role !== "user" && role !== "assistant")) return null;
-        const text =
-          m.content?.text ??
-          (typeof m.content === "string" ? m.content : "") ??
-          m.text ??
-          m.message ??
-          m.value ??
-          "";
-        const createdRaw = m.createdAt || m.created_at || m.timestamp || m.time;
-        const createdAt =
-          typeof createdRaw === "number"
-            ? createdRaw
-            : Date.parse(createdRaw) || Date.now();
-        return ensureMessageId(
-          buildMessage({
-            role,
-            text: String(text),
-            tokens: role === "assistant" ? estimateTokens(String(text)) : 0,
-            createdAt
-          })
-        );
-      })
-      .filter(Boolean);
-  };
+  const normalizeImportedMessages = (list) => normalizeSessionMessages(list);
 
   const normalizeImportedSessions = (raw) => {
     if (!raw) return [];
@@ -3921,7 +4280,15 @@ function SessionsPage() {
     } else if (raw.sessions && Array.isArray(raw.sessions)) {
       candidates = raw.sessions;
     } else if (raw.messages && Array.isArray(raw.messages)) {
-      candidates = [{ messages: raw.messages, title: raw.title }];
+      candidates = [
+        {
+          id: raw.id || raw.uuid,
+          title: raw.title || raw.name,
+          createdAt: raw.createdAt || raw.created_at,
+          updatedAt: raw.updatedAt || raw.updated_at,
+          messages: raw.messages
+        }
+      ];
     } else {
       return [];
     }
@@ -3932,12 +4299,29 @@ function SessionsPage() {
         if (!s) return null;
         const msgs = normalizeImportedMessages(s.messages || s);
         if (!msgs.length) return null;
+        const first = msgs[0];
         const last = msgs[msgs.length - 1];
-        const updatedAt = last?.createdAt || now;
+        const sourceCreatedRaw = s.createdAt || s.created_at || s.createdAtIso;
+        const sourceCreated =
+          typeof sourceCreatedRaw === "number"
+            ? sourceCreatedRaw
+            : Date.parse(sourceCreatedRaw);
+        const sourceUpdatedRaw = s.updatedAt || s.updated_at || s.updatedAtIso;
+        const sourceUpdated =
+          typeof sourceUpdatedRaw === "number"
+            ? sourceUpdatedRaw
+            : Date.parse(sourceUpdatedRaw);
+        const createdAt = Number.isFinite(sourceCreated)
+          ? sourceCreated
+          : first?.createdAt || last?.createdAt || now;
+        const updatedAt = Number.isFinite(sourceUpdated)
+          ? sourceUpdated
+          : last?.createdAt || now;
         return {
           id: String(s.id || crypto?.randomUUID?.() || `${now}-${idx}`),
           title: s.title || s.name || `导入对话 ${idx + 1}`,
           messages: msgs,
+          createdAt,
           updatedAt
         };
       })
@@ -3984,6 +4368,7 @@ function SessionsPage() {
     const next = sessions.filter((s) => s.id !== id);
     setSessions(next);
     writeSessions(next);
+    deleteSessionFromSupabase(id);
     if (readCurrentSessionId() === id) {
       writeCurrentSessionId(next[0]?.id || "");
     }
@@ -4299,11 +4684,30 @@ function SessionsPage() {
 }
 
 export default function App() {
+  const [settingsReady, setSettingsReady] = useState(() => !isSupabaseEnabled());
   const route = useHashRoute();
   const isChat = route.startsWith("/chat");
   const isSessions = route.startsWith("/sessions");
   const isTools = route.startsWith("/tools");
   const isHome = !isChat && !isSessions && !isTools;
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        await hydrateSettingsFromSupabase();
+      } finally {
+        if (active) setSettingsReady(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (!settingsReady) {
+    return <div className="RouteShell" />;
+  }
 
   return (
     <div className="RouteShell">
