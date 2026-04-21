@@ -874,14 +874,14 @@ pre.tool-card-body {
 }
 
 .msg-markdown {
-  font-size: 19px;
+  font-size: 20px;
   line-height: 1.55;
   letter-spacing: 0.05px;
   color: #111111;
 }
 
 .msg-raw {
-  font-size: 19px;
+  font-size: 20px;
   line-height: 1.55;
   letter-spacing: 0.05px;
   color: #111111;
@@ -936,7 +936,7 @@ pre.tool-card-body {
   justify-content: space-between;
   min-height: 30px;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   color: #475569;
   border-bottom: 1px solid rgba(15, 23, 42, 0.1);
@@ -1004,12 +1004,12 @@ pre.tool-card-body {
 }
 
 .msg-markdown h2 {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 600;
 }
 
 .msg-markdown h3 {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
 }
 
@@ -1126,7 +1126,7 @@ pre.tool-card-body {
 }
 
 .model-toggle-caret {
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1;
 }
 
@@ -1184,7 +1184,7 @@ pre.tool-card-body {
   padding: 6px 8px;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .model-menu-item:hover {
@@ -1198,7 +1198,7 @@ pre.tool-card-body {
 
 .model-menu-empty {
   padding: 8px;
-  font-size: 12px;
+  font-size: 14px;
   color: rgba(160, 163, 173, 0.9);
 }
 
@@ -1249,7 +1249,7 @@ pre.tool-card-body {
 }
 
 .session-import-hint {
-  font-size: 12px;
+  font-size: 14px;
   color: #6b7280;
 }
 
@@ -1356,7 +1356,7 @@ pre.tool-card-body {
 
 .session-preview {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: 14px;
   color: #6b7280;
   line-height: 1.5;
 }
@@ -1386,7 +1386,7 @@ pre.tool-card-body {
 }
 
 .session-title {
-  font-size: 14px;
+  font-size: 18px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -1427,14 +1427,14 @@ pre.tool-card-body {
 .sheet-edit-title {
   text-align: center;
   font-weight: 600;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .sheet-edit-btn {
   border: 0;
   background: transparent;
   color: #e5f9f4;
-  font-size: 13px;
+  font-size: 16px;
   cursor: pointer;
   padding: 4px 6px;
 }
@@ -1451,7 +1451,7 @@ pre.tool-card-body {
   background: rgba(20, 22, 30, 0.6);
   color: #f3f4f6;
   padding: 10px;
-  font-size: 13px;
+  font-size: 16px;
   resize: vertical;
 }
 
@@ -1517,7 +1517,7 @@ pre.tool-card-body {
 }
 
 .rename-title {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   text-align: center;
   color: #111827;
@@ -1843,7 +1843,7 @@ select.form-input {
 }
 
 .memory-text {
-  font-size: 12px;
+  font-size: 20px;
   color: rgba(220, 223, 230, 0.95);
 }
 
