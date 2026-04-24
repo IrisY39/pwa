@@ -1840,6 +1840,32 @@ select.form-input {
   background: rgba(12, 14, 20, 0.6);
   display: grid;
   gap: 6px;
+  position: relative;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.memory-item.is-active {
+  background: rgba(15, 23, 42, 0.04);
+  border-color: rgba(15, 23, 42, 0.12);
+}
+
+.provider-item {
+  padding: 6px 10px;
+  min-height: 40px;
+  gap: 0;
+  align-items: center;
+}
+
+.provider-item .memory-text {
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.memory-dropdown {
+  z-index: 30;
 }
 
 .memory-text {

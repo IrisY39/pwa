@@ -38,11 +38,13 @@ const supabase =
 
 const isSupabaseEnabled = () => !!supabase;
 const APP_SETTINGS_ROW_ID = "default";
+const MEMORY_LIST_KEY = "opt_memory_list";
 const SYNCED_SETTING_KEYS = [
   "api_url",
   "api_key",
   "api_model",
   "opt_added_models",
+  "opt_api_providers",
   "opt_temperature",
   "opt_top_p",
   "opt_max_tokens",
@@ -56,7 +58,6 @@ const SYNCED_SETTING_KEYS = [
   "opt_search_enabled",
   "opt_mcp_enabled",
   "opt_memory_enabled",
-  "opt_memory_list",
   "mcp_url",
   "mcp_api_key",
   "web_search_url",
@@ -671,25 +672,245 @@ const normalizeMemoryList = (raw) => {
       if (typeof item === "string") {
         const content = item.trim();
         if (!content) return null;
-        return { content, updatedAt: now };
+        return { id: null, content, updatedAt: now, createdAt: now };
       }
       if (item && typeof item === "object") {
+        const idNum = Number(item.id);
+        const id = Number.isFinite(idNum) ? idNum : null;
         const content = String(item.content ?? item.text ?? "").trim();
         if (!content) return null;
+        const rawCreated = item.createdAt ?? item.created_at;
         const rawTime =
           item.updatedAt ??
           item.updated_at ??
           item.createdAt ??
           item.created_at;
+        let createdAt =
+          typeof rawCreated === "number" ? rawCreated : Date.parse(rawCreated);
+        if (!Number.isFinite(createdAt)) createdAt = now;
         let updatedAt =
           typeof rawTime === "number" ? rawTime : Date.parse(rawTime);
-        if (!Number.isFinite(updatedAt)) updatedAt = now;
-        return { content, updatedAt };
+        if (!Number.isFinite(updatedAt)) updatedAt = createdAt;
+        return { id, content, updatedAt, createdAt };
       }
       return null;
     })
     .filter(Boolean);
   return normalized;
+};
+
+const normalizeApiProviders = (raw) => {
+  const list = Array.isArray(raw) ? raw : [];
+  const normalized = list
+    .map((item, idx) => {
+      if (!item || typeof item !== "object") return null;
+      const id = String(item.id || `provider_${idx + 1}`).trim();
+      const name = String(item.name || `供应商 ${idx + 1}`).trim();
+      const url = String(item.url || "").trim();
+      const key = String(item.key || "").trim();
+      const enabled = item.enabled !== false;
+      if (!id || !url) return null;
+      return { id, name: name || id, url, key, enabled };
+    })
+    .filter(Boolean);
+  return normalized;
+};
+
+const readApiProvidersFromLocal = () => {
+  let raw = [];
+  try {
+    raw = JSON.parse(readSetting("opt_api_providers", "[]"));
+  } catch {}
+  return normalizeApiProviders(raw);
+};
+
+const modelKeyOf = (item) => `${item.providerId}::${item.id}`;
+const enabledProviderIdSetOf = (providers = []) =>
+  new Set(
+    (Array.isArray(providers) ? providers : [])
+      .filter((p) => p && p.enabled !== false)
+      .map((p) => p.id)
+  );
+const filterModelsByEnabledProviders = (models = [], providers = []) => {
+  const enabledIds = enabledProviderIdSetOf(providers);
+  return (Array.isArray(models) ? models : []).filter((m) =>
+    enabledIds.has(m.providerId)
+  );
+};
+
+const normalizeAddedModels = (raw, providers = []) => {
+  const list = Array.isArray(raw) ? raw : [];
+  const defaultProviderId = providers[0]?.id || "";
+  const normalized = list
+    .map((item) => {
+      if (typeof item === "string") {
+        const text = item.trim();
+        if (!text) return null;
+        if (text.includes("::")) {
+          const [providerId, ...rest] = text.split("::");
+          const id = rest.join("::").trim();
+          if (!providerId || !id) return null;
+          return { providerId, id };
+        }
+        if (!defaultProviderId) return null;
+        return { providerId: defaultProviderId, id: text };
+      }
+      if (item && typeof item === "object") {
+        const id = String(item.id || item.model || "").trim();
+        const providerId = String(item.providerId || defaultProviderId).trim();
+        if (!id || !providerId) return null;
+        return { providerId, id };
+      }
+      return null;
+    })
+    .filter(Boolean);
+  const dedup = new Map();
+  normalized.forEach((m) => dedup.set(modelKeyOf(m), m));
+  return [...dedup.values()];
+};
+
+const findAddedModelBySelection = (list, selected) => {
+  if (!selected) return null;
+  const exact = list.find((m) => modelKeyOf(m) === selected);
+  if (exact) return exact;
+  return list.find((m) => m.id === selected) || null;
+};
+
+const readMemoryListFromLocal = () => {
+  try {
+    return normalizeMemoryList(
+      JSON.parse(readSetting(MEMORY_LIST_KEY, "[]"))
+    );
+  } catch {
+    return [];
+  }
+};
+
+const writeMemoryListToLocal = (list, emitEvent = true) => {
+  const normalized = normalizeMemoryList(list);
+  writeSetting(MEMORY_LIST_KEY, JSON.stringify(normalized));
+  if (emitEvent) window.dispatchEvent(new Event("memory:update"));
+  return normalized;
+};
+
+const mapMemoryRowToItem = (row) => {
+  if (!row || typeof row !== "object") return null;
+  return normalizeMemoryList([
+    {
+      id: row.id,
+      content: row.content,
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    }
+  ])[0];
+};
+
+const fetchMemoriesFromSupabase = async () => {
+  if (!supabase) return { list: [], error: "未配置 Supabase" };
+  try {
+    const { data, error } = await supabase
+      .from("memories")
+      .select("id,content,created_at,updated_at")
+      .order("updated_at", { ascending: false });
+    if (error) return { list: [], error: error.message || "读取失败" };
+    const list = (data || []).map(mapMemoryRowToItem).filter(Boolean);
+    return { list, error: null };
+  } catch (err) {
+    return { list: [], error: err?.message || String(err) };
+  }
+};
+
+const loadMemoriesFromSupabase = async () => {
+  if (!supabase) return readMemoryListFromLocal();
+  try {
+    const { list, error } = await fetchMemoriesFromSupabase();
+    if (error) {
+      console.warn("supabase load memories failed", error);
+      return readMemoryListFromLocal();
+    }
+    if (list.length === 0) {
+      const localList = readMemoryListFromLocal();
+      if (localList.length > 0) {
+        return upsertMemoriesToSupabase(localList);
+      }
+    }
+    writeMemoryListToLocal(list, false);
+    return list;
+  } catch (err) {
+    console.warn("supabase load memories exception", err);
+    return readMemoryListFromLocal();
+  }
+};
+
+const upsertMemoriesToSupabase = async (inputList) => {
+  const list = normalizeMemoryList(inputList);
+  if (!supabase) return writeMemoryListToLocal(list);
+  try {
+    const { data: existingRows, error: existingError } = await supabase
+      .from("memories")
+      .select("id");
+    if (existingError) {
+      console.warn("supabase load existing memories failed", existingError);
+      return writeMemoryListToLocal(list);
+    }
+
+    const withId = list.filter((m) => Number.isFinite(Number(m.id)));
+    const noId = list.filter((m) => !Number.isFinite(Number(m.id)));
+
+    if (withId.length > 0) {
+      const payload = withId.map((m) => ({
+        id: Number(m.id),
+        content: m.content,
+        updated_at: new Date(m.updatedAt || Date.now()).toISOString()
+      }));
+      const { error: upsertError } = await supabase
+        .from("memories")
+        .upsert(payload, { onConflict: "id" });
+      if (upsertError) {
+        console.warn("supabase upsert memories failed", upsertError);
+      }
+    }
+
+    if (noId.length > 0) {
+      const payload = noId.map((m) => {
+        const createdAt = m.createdAt || m.updatedAt || Date.now();
+        return {
+          content: m.content,
+          created_at: new Date(createdAt).toISOString(),
+          updated_at: new Date(m.updatedAt || createdAt).toISOString()
+        };
+      });
+      const { error: insertError } = await supabase.from("memories").insert(payload);
+      if (insertError) {
+        console.warn("supabase insert memories failed", insertError);
+      }
+    }
+
+    const existingIds = new Set(
+      (existingRows || [])
+        .map((r) => Number(r.id))
+        .filter((id) => Number.isFinite(id))
+    );
+    const nextIds = new Set(
+      withId.map((m) => Number(m.id)).filter((id) => Number.isFinite(id))
+    );
+    const deleteIds = [...existingIds].filter((id) => !nextIds.has(id));
+    if (deleteIds.length > 0) {
+      const { error: deleteError } = await supabase
+        .from("memories")
+        .delete()
+        .in("id", deleteIds);
+      if (deleteError) {
+        console.warn("supabase delete removed memories failed", deleteError);
+      }
+    }
+
+    const fresh = await loadMemoriesFromSupabase();
+    return writeMemoryListToLocal(fresh);
+  } catch (err) {
+    console.warn("supabase sync memories exception", err);
+    return writeMemoryListToLocal(list);
+  }
 };
 
 const getLastMessageTime = (list) => {
@@ -759,8 +980,12 @@ function ChatPage() {
     () => readSetting("opt_assistant_name") || "Kelivo Chat"
   );
   const [chatModels, setChatModels] = useState(() => {
+    const providers = readApiProvidersFromLocal();
     try {
-      return JSON.parse(readSetting("opt_added_models", "[]"));
+      return normalizeAddedModels(
+        JSON.parse(readSetting("opt_added_models", "[]")),
+        providers
+      );
     } catch {
       return [];
     }
@@ -1225,8 +1450,14 @@ function ChatPage() {
 
   useEffect(() => {
     setChatModelId(readSetting("api_model"));
+    const providers = readApiProvidersFromLocal();
     try {
-      setChatModels(JSON.parse(readSetting("opt_added_models", "[]")));
+      setChatModels(
+        normalizeAddedModels(
+          JSON.parse(readSetting("opt_added_models", "[]")),
+          providers
+        )
+      );
     } catch {
       setChatModels([]);
     }
@@ -1235,8 +1466,14 @@ function ChatPage() {
   useEffect(() => {
     const onModelsUpdate = () => {
       setChatModelId(readSetting("api_model"));
+      const providers = readApiProvidersFromLocal();
       try {
-        setChatModels(JSON.parse(readSetting("opt_added_models", "[]")));
+        setChatModels(
+          normalizeAddedModels(
+            JSON.parse(readSetting("opt_added_models", "[]")),
+            providers
+          )
+        );
       } catch {
         setChatModels([]);
       }
@@ -1495,9 +1732,29 @@ function ChatPage() {
     setIsGenerating(true);
     try {
       safeSetTyping(true);
+      const providers = readApiProvidersFromLocal();
       apiUrl = readSetting("api_url");
       apiKey = readSetting("api_key");
       modelId = readSetting("api_model");
+      let modelRequestId = modelId;
+      try {
+        const addedModels = normalizeAddedModels(
+          JSON.parse(readSetting("opt_added_models", "[]")),
+          providers
+        );
+        const selectedModel = findAddedModelBySelection(addedModels, modelId);
+        if (selectedModel) {
+          modelRequestId = selectedModel.id;
+          const provider = providers.find((p) => p.id === selectedModel.providerId);
+          if (provider) {
+            apiUrl = provider.url || apiUrl;
+            apiKey = provider.key || apiKey;
+          }
+        } else if (typeof modelId === "string" && modelId.includes("::")) {
+          const fallbackModel = modelId.split("::").slice(1).join("::").trim();
+          if (fallbackModel) modelRequestId = fallbackModel;
+        }
+      } catch {}
       temperature = parseNumber(readSetting("opt_temperature"), undefined);
       topP = parseNumber(readSetting("opt_top_p"), undefined);
       maxTokens = parseNumber(readSetting("opt_max_tokens"), undefined);
@@ -1506,13 +1763,7 @@ function ChatPage() {
       systemPrompt = readSetting("opt_system_prompt");
       template = readSetting("opt_message_template");
       memoryEnabled = readSetting("opt_memory_enabled") === "true";
-      try {
-        memoryList = normalizeMemoryList(
-          JSON.parse(readSetting("opt_memory_list", "[]"))
-        );
-      } catch {
-        memoryList = [];
-      }
+      memoryList = await loadMemoriesFromSupabase();
       searchEnabled = readSetting("opt_search_enabled") === "true";
       mcpEnabled = readSetting("opt_mcp_enabled") === "true";
       mcpUrl = readSetting("mcp_url");
@@ -1520,7 +1771,7 @@ function ChatPage() {
       webSearchUrl = readSetting("web_search_url");
       webSearchApiKey = readSetting("web_search_api_key");
 
-      if (!modelId) {
+      if (!modelRequestId) {
         showToast("请选择聊天模型");
         return;
       }
@@ -1583,7 +1834,7 @@ function ChatPage() {
             (m, idx) =>
               [
                 "<record>",
-                `<id>${idx + 1}</id>`,
+                `<id>${m.id ?? idx + 1}</id>`,
                 `<content>${m.content}</content>`,
                 "</record>"
               ].join("\n")
@@ -1730,20 +1981,8 @@ function ChatPage() {
         }
       };
 
-      const readMemoryList = () => {
-        try {
-          return normalizeMemoryList(
-            JSON.parse(readSetting("opt_memory_list", "[]"))
-          );
-        } catch {
-          return [];
-        }
-      };
-
-      const writeMemoryList = (list) => {
-        writeSetting("opt_memory_list", JSON.stringify(list));
-        window.dispatchEvent(new Event("memory:update"));
-      };
+      const readMemoryList = async () => loadMemoriesFromSupabase();
+      const writeMemoryList = async (list) => upsertMemoriesToSupabase(list);
 
       const runToolCall = async (toolCall) => {
         const name = toolCall?.function?.name || toolCall?.name || "";
@@ -1803,14 +2042,15 @@ function ChatPage() {
               )
             };
           }
-          const list = readMemoryList();
-          list.unshift({ content, updatedAt: Date.now() });
-          writeMemoryList(list);
+          const list = await readMemoryList();
+          const next = [{ id: null, content, updatedAt: Date.now() }, ...list];
+          const saved = await writeMemoryList(next);
+          const created = saved.find((m) => m.content === content) || saved[0];
           return {
             tool_call_id: toolCall?.id,
             name,
             content: JSON.stringify(
-              { ok: true, id: 1, content },
+              { ok: true, id: created?.id ?? null, content },
               null,
               2
             )
@@ -1820,8 +2060,9 @@ function ChatPage() {
         if (name === "edit_memory") {
           const idRaw = args?.id;
           const content = String(args?.content || "").trim();
-          const list = readMemoryList();
-          const idx = Number.isFinite(Number(idRaw)) ? Number(idRaw) - 1 : -1;
+          const list = await readMemoryList();
+          const targetId = Number(idRaw);
+          const idx = list.findIndex((m) => Number(m.id) === targetId);
           if (!content) {
             return {
               tool_call_id: toolCall?.id,
@@ -1833,7 +2074,7 @@ function ChatPage() {
               )
             };
           }
-          if (idx < 0 || idx >= list.length) {
+          if (idx < 0) {
             return {
               tool_call_id: toolCall?.id,
               name,
@@ -1846,12 +2087,13 @@ function ChatPage() {
           }
           const before = list[idx]?.content || "";
           list[idx] = { ...list[idx], content, updatedAt: Date.now() };
-          writeMemoryList(list);
+          const saved = await writeMemoryList(list);
+          const savedRow = saved.find((m) => Number(m.id) === targetId) || list[idx];
           return {
             tool_call_id: toolCall?.id,
             name,
             content: JSON.stringify(
-              { ok: true, id: idx + 1, before, after: content },
+              { ok: true, id: savedRow?.id ?? targetId, before, after: content },
               null,
               2
             )
@@ -1860,13 +2102,14 @@ function ChatPage() {
 
         if (name === "delete_memory") {
           const idRaw = args?.id;
-          const list = readMemoryList();
+          const list = await readMemoryList();
           let removed = null;
-          const idx = Number.isFinite(Number(idRaw)) ? Number(idRaw) - 1 : -1;
-          if (idx >= 0 && idx < list.length) {
-            removed = { id: idx + 1, content: list[idx].content };
+          const targetId = Number(idRaw);
+          const idx = list.findIndex((m) => Number(m.id) === targetId);
+          if (idx >= 0) {
+            removed = { id: list[idx].id, content: list[idx].content };
             list.splice(idx, 1);
-            writeMemoryList(list);
+            await writeMemoryList(list);
             return {
               tool_call_id: toolCall?.id,
               name,
@@ -1983,7 +2226,7 @@ function ChatPage() {
       };
 
       const body = {
-        model: modelId,
+        model: modelRequestId,
         messages: messagesPayload,
         tools,
         tool_choice: "auto",
@@ -2912,7 +3155,9 @@ function ChatPage() {
                 }}
               >
                 <span className="chat-model-label">
-                  {chatModelId || "未选择聊天模型"}
+                  {findAddedModelBySelection(chatModels, chatModelId)?.id ||
+                    chatModelId ||
+                    "未选择聊天模型"}
                 </span>
                 <ChevronDown className="h-3 w-3 chat-model-caret" />
               </div>
@@ -2926,17 +3171,18 @@ function ChatPage() {
                   </li>
                 )}
                 {chatModels.map((m) => (
-                  <li key={m}>
+                  <li key={modelKeyOf(m)}>
                     <button
                       type="button"
-                      className={chatModelId === m ? "active" : ""}
+                      className={chatModelId === modelKeyOf(m) ? "active" : ""}
                       onClick={() => {
-                        setChatModelId(m);
-                        writeSetting("api_model", m);
+                        const nextValue = modelKeyOf(m);
+                        setChatModelId(nextValue);
+                        writeSetting("api_model", nextValue);
                         emitModelsUpdate();
                       }}
                     >
-                      {m}
+                      {m.id}
                     </button>
                   </li>
                 ))}
@@ -3269,12 +3515,27 @@ function ChatPage() {
 
 
 function ToolsPage() {
-  const [apiUrl, setApiUrl] = useState(() => readSetting("api_url"));
-  const [apiKey, setApiKey] = useState(() => readSetting("api_key"));
+  const initialProviders = readApiProvidersFromLocal();
+  const [apiProviders, setApiProviders] = useState(() => initialProviders);
+  const [providerId, setProviderId] = useState(() => initialProviders[0]?.id || "");
+  const [providerName, setProviderName] = useState(
+    () => initialProviders[0]?.name || ""
+  );
+  const [apiProviderDetailOpen, setApiProviderDetailOpen] = useState(false);
+  const [apiUrl, setApiUrl] = useState(
+    () => initialProviders[0]?.url || readSetting("api_url")
+  );
+  const [apiKey, setApiKey] = useState(
+    () => initialProviders[0]?.key || readSetting("api_key")
+  );
   const [models, setModels] = useState([]);
   const [addedModels, setAddedModels] = useState(() => {
+    const providers = readApiProvidersFromLocal();
     try {
-      return JSON.parse(readSetting("opt_added_models", "[]"));
+      return normalizeAddedModels(
+        JSON.parse(readSetting("opt_added_models", "[]")),
+        providers
+      );
     } catch {
       return [];
     }
@@ -3295,6 +3556,7 @@ function ToolsPage() {
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelError, setModelError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [apiSavedHint, setApiSavedHint] = useState("");
   const [tab, setTab] = useState("api");
   const [logs, setLogs] = useState(() => readLogs());
   const [requestLogs, setRequestLogs] = useState(() => readRequestLogs());
@@ -3323,16 +3585,85 @@ function ToolsPage() {
   const [memoryEnabled, setMemoryEnabled] = useState(
     () => readSetting("opt_memory_enabled") === "true"
   );
-  const [memoryList, setMemoryList] = useState(() => {
-    try {
-      return normalizeMemoryList(JSON.parse(readSetting("opt_memory_list", "[]")));
-    } catch {
-      return [];
-    }
-  });
+  const [memoryList, setMemoryList] = useState(() => readMemoryListFromLocal());
   const [memoryDraft, setMemoryDraft] = useState("");
   const [editingMemoryIndex, setEditingMemoryIndex] = useState(null);
   const [editingMemoryText, setEditingMemoryText] = useState("");
+  const [memorySyncText, setMemorySyncText] = useState("");
+  const [memoryMenuIndex, setMemoryMenuIndex] = useState(null);
+  const [showMemoryRename, setShowMemoryRename] = useState(false);
+  const [deleteMemoryIndex, setDeleteMemoryIndex] = useState(null);
+  const memoryPressTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (!providerId) return;
+    const provider = apiProviders.find((p) => p.id === providerId);
+    if (!provider) return;
+    setProviderName(provider.name || "");
+    setApiUrl(provider.url || "");
+    setApiKey(provider.key || "");
+  }, [providerId, apiProviders]);
+
+  const currentProvider = useMemo(
+    () => apiProviders.find((p) => p.id === providerId) || null,
+    [apiProviders, providerId]
+  );
+  const providerDirty =
+    !!currentProvider &&
+    (providerName.trim() !== String(currentProvider.name || "").trim() ||
+      apiUrl.trim() !== String(currentProvider.url || "").trim() ||
+      apiKey.trim() !== String(currentProvider.key || "").trim());
+  const mcpDirty =
+    mcpUrl.trim() !== readSetting("mcp_url").trim() ||
+    mcpApiKey.trim() !== readSetting("mcp_api_key").trim() ||
+    mcpEnabled !== (readSetting("opt_mcp_enabled") === "true");
+  const searchDirty =
+    webSearchUrl.trim() !== readSetting("web_search_url").trim() ||
+    webSearchApiKey.trim() !== readSetting("web_search_api_key").trim() ||
+    searchEnabled !== (readSetting("opt_search_enabled") === "true");
+
+  useEffect(() => {
+    const syncFromLocal = () => {
+      const providers = readApiProvidersFromLocal();
+      setApiProviders(providers);
+      const keep = providers.find((p) => p.id === providerId) || providers[0] || null;
+      setProviderId(keep?.id || "");
+      setProviderName(keep?.name || "");
+      setApiUrl(keep?.url || readSetting("api_url"));
+      setApiKey(keep?.key || readSetting("api_key"));
+      try {
+        setAddedModels(
+          normalizeAddedModels(
+            JSON.parse(readSetting("opt_added_models", "[]")),
+            providers
+          )
+        );
+      } catch {
+        setAddedModels([]);
+      }
+      setModelId(readSetting("api_model"));
+      setTemperature(readSetting("opt_temperature"));
+      setTopP(readSetting("opt_top_p"));
+      setMaxTokens(readSetting("opt_max_tokens"));
+      setContextLimit(readSetting("opt_context_limit"));
+      setUseStream(readSetting("opt_stream") === "true");
+      setMcpUrl(readSetting("mcp_url"));
+      setMcpApiKey(readSetting("mcp_api_key"));
+      setWebSearchUrl(readSetting("web_search_url"));
+      setWebSearchApiKey(readSetting("web_search_api_key"));
+      setAssistantName(readSetting("opt_assistant_name"));
+      setAssistantAvatar(readSetting("opt_assistant_avatar"));
+      setUserAvatar(readSetting("opt_user_avatar"));
+      setSystemPrompt(readSetting("opt_system_prompt"));
+      setMessageTemplate(readSetting("opt_message_template"));
+      setSearchEnabled(readSetting("opt_search_enabled") !== "false");
+      setMcpEnabled(readSetting("opt_mcp_enabled") === "true");
+      setMemoryEnabled(readSetting("opt_memory_enabled") === "true");
+    };
+    syncFromLocal();
+    window.addEventListener("settings:update", syncFromLocal);
+    return () => window.removeEventListener("settings:update", syncFromLocal);
+  }, []);
 
   useEffect(() => {
     if (tab === "logs") {
@@ -3402,8 +3733,14 @@ function ToolsPage() {
 
   useEffect(() => {
     const onModelsUpdate = () => {
+      const providers = readApiProvidersFromLocal();
       try {
-        setAddedModels(JSON.parse(readSetting("opt_added_models", "[]")));
+        setAddedModels(
+          normalizeAddedModels(
+            JSON.parse(readSetting("opt_added_models", "[]")),
+            providers
+          )
+        );
       } catch {
         setAddedModels([]);
       }
@@ -3414,25 +3751,121 @@ function ToolsPage() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      const remoteList = await loadMemoriesFromSupabase();
+      if (!cancelled) setMemoryList(remoteList);
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const onMemoryUpdate = () => {
-      try {
-        setMemoryList(
-          normalizeMemoryList(JSON.parse(readSetting("opt_memory_list", "[]")))
-        );
-      } catch {
-        setMemoryList([]);
-      }
+      setMemoryList(readMemoryListFromLocal());
     };
     window.addEventListener("memory:update", onMemoryUpdate);
     return () => window.removeEventListener("memory:update", onMemoryUpdate);
   }, []);
 
+  useEffect(() => {
+    if (memoryMenuIndex == null || showMemoryRename || deleteMemoryIndex != null) return;
+    const onClick = (event) => {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        (target.closest(".memory-dropdown") || target.closest(".memory-item.is-active"))
+      ) {
+        return;
+      }
+      setMemoryMenuIndex(null);
+    };
+    window.addEventListener("click", onClick);
+    return () => window.removeEventListener("click", onClick);
+  }, [memoryMenuIndex, showMemoryRename, deleteMemoryIndex]);
 
-  const handleSave = () => {
-    writeSetting("api_url", apiUrl.trim());
-    writeSetting("api_key", apiKey.trim());
-    if (modelId) writeSetting("api_model", modelId);
-    writeSetting("opt_added_models", JSON.stringify(addedModels));
+  useEffect(() => {
+    if (memoryMenuIndex != null && memoryMenuIndex >= memoryList.length) {
+      setMemoryMenuIndex(null);
+      setShowMemoryRename(false);
+    }
+    if (deleteMemoryIndex != null && deleteMemoryIndex >= memoryList.length) {
+      setDeleteMemoryIndex(null);
+    }
+  }, [memoryList, memoryMenuIndex, deleteMemoryIndex]);
+
+  useEffect(
+    () => () => {
+      if (memoryPressTimerRef.current) {
+        clearTimeout(memoryPressTimerRef.current);
+        memoryPressTimerRef.current = null;
+      }
+    },
+    []
+  );
+
+
+  const handleSaveProvider = () => {
+    const trimmedProviderId = String(providerId || "").trim();
+    if (!trimmedProviderId) {
+      setModelError("请先新增并选择一个 API 供应商");
+      return;
+    }
+    const nextProvidersRaw = Array.isArray(apiProviders) ? [...apiProviders] : [];
+    const existingIdx = nextProvidersRaw.findIndex((p) => p.id === trimmedProviderId);
+    const nextProvider = {
+      id: trimmedProviderId,
+      name: String(providerName || "").trim() || trimmedProviderId,
+      url: apiUrl.trim(),
+      key: apiKey.trim()
+    };
+    if (existingIdx >= 0) {
+      nextProvidersRaw[existingIdx] = nextProvider;
+    } else {
+      nextProvidersRaw.unshift(nextProvider);
+    }
+    const nextProviders = normalizeApiProviders(nextProvidersRaw);
+    const normalizedModels = normalizeAddedModels(addedModels, nextProviders);
+    const selectedModel = findAddedModelBySelection(normalizedModels, modelId);
+    const nextModelId = selectedModel
+      ? modelKeyOf(selectedModel)
+      : normalizedModels[0]
+      ? modelKeyOf(normalizedModels[0])
+      : "";
+
+    setApiProviders(nextProviders);
+    setAddedModels(normalizedModels);
+    setModelId(nextModelId);
+
+    writeSetting("opt_api_providers", JSON.stringify(nextProviders));
+    writeSetting("api_url", nextProvider.url);
+    writeSetting("api_key", nextProvider.key);
+    writeSetting("opt_added_models", JSON.stringify(normalizedModels));
+    writeSetting("api_model", nextModelId);
+    emitModelsUpdate();
+    setApiSavedHint("供应商已保存");
+    setTimeout(() => setApiSavedHint(""), 1200);
+  };
+
+  const handleSaveMcp = () => {
+    writeSetting("mcp_url", mcpUrl.trim());
+    writeSetting("mcp_api_key", mcpApiKey.trim());
+    writeSetting("opt_mcp_enabled", mcpEnabled ? "true" : "false");
+    setApiSavedHint("MCP 设置已保存");
+    setTimeout(() => setApiSavedHint(""), 1200);
+  };
+
+  const handleSaveSearch = () => {
+    writeSetting("web_search_url", webSearchUrl.trim());
+    writeSetting("web_search_api_key", webSearchApiKey.trim());
+    writeSetting("opt_search_enabled", searchEnabled ? "true" : "false");
+    setApiSavedHint("搜索设置已保存");
+    setTimeout(() => setApiSavedHint(""), 1200);
+  };
+
+  const handleSavePersonal = async () => {
     writeSetting("opt_temperature", temperature);
     writeSetting("opt_top_p", topP);
     writeSetting("opt_max_tokens", maxTokens);
@@ -3443,17 +3876,47 @@ function ToolsPage() {
     writeSetting("opt_user_avatar", userAvatar.trim());
     writeSetting("opt_system_prompt", systemPrompt.trim());
     writeSetting("opt_memory_enabled", memoryEnabled ? "true" : "false");
-    writeSetting("opt_memory_list", JSON.stringify(memoryList));
     writeSetting("opt_message_template", messageTemplate.trim());
-    writeSetting("opt_search_enabled", searchEnabled ? "true" : "false");
-    writeSetting("opt_mcp_enabled", mcpEnabled ? "true" : "false");
-    writeSetting("mcp_url", mcpUrl.trim());
-    writeSetting("mcp_api_key", mcpApiKey.trim());
-    writeSetting("web_search_url", webSearchUrl.trim());
-    writeSetting("web_search_api_key", webSearchApiKey.trim());
     setSaved(true);
     emitModelsUpdate();
     setTimeout(() => setSaved(false), 1200);
+  };
+
+  const handleSaveMemories = async () => {
+    const syncedMemories = await upsertMemoriesToSupabase(memoryList);
+    setMemoryList(syncedMemories);
+    setMemoryMenuIndex(null);
+    setShowMemoryRename(false);
+    setDeleteMemoryIndex(null);
+    setMemorySyncText(`已保存到云端（${syncedMemories.length} 条）`);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1200);
+  };
+
+  const handleMemoryRename = () => {
+    if (editingMemoryIndex == null || editingMemoryIndex < 0) return;
+    const content = editingMemoryText.trim();
+    if (!content) return;
+    const next = [...memoryList];
+    if (!next[editingMemoryIndex]) return;
+    next[editingMemoryIndex] = {
+      ...next[editingMemoryIndex],
+      content,
+      updatedAt: Date.now()
+    };
+    setMemoryList(next.filter((m) => m?.content));
+    setShowMemoryRename(false);
+    setMemoryMenuIndex(null);
+    setEditingMemoryIndex(null);
+    setEditingMemoryText("");
+  };
+
+  const handleMemoryDelete = () => {
+    if (deleteMemoryIndex == null || deleteMemoryIndex < 0) return;
+    const next = memoryList.filter((_, i) => i !== deleteMemoryIndex);
+    setMemoryList(next);
+    setDeleteMemoryIndex(null);
+    setMemoryMenuIndex(null);
   };
 
   const handleAvatarUpload = (event) => {
@@ -3533,26 +3996,91 @@ function ToolsPage() {
 
   const handleAddModel = () => {
     if (!modelCandidate) return;
-    if (addedModels.includes(modelCandidate)) return;
-    const next = [modelCandidate, ...addedModels];
+    if (!providerId) {
+      setModelError("请先选择或创建 API 供应商");
+      return;
+    }
+    const nextItem = { providerId, id: modelCandidate };
+    const exists = addedModels.some((m) => modelKeyOf(m) === modelKeyOf(nextItem));
+    if (exists) return;
+    const next = [nextItem, ...addedModels];
     setAddedModels(next);
     if (!modelId) {
-      setModelId(modelCandidate);
+      setModelId(modelKeyOf(nextItem));
     }
     writeSetting("opt_added_models", JSON.stringify(next));
     emitModelsUpdate();
   };
 
-  const handleRemoveModel = (id) => {
-    const next = addedModels.filter((m) => m !== id);
+  const handleRemoveModel = (key) => {
+    const next = addedModels.filter((m) => modelKeyOf(m) !== key);
     setAddedModels(next);
     writeSetting("opt_added_models", JSON.stringify(next));
-    if (modelId === id) {
-      const fallback = next[0] || "";
+    if (modelId === key) {
+      const fallback = next[0] ? modelKeyOf(next[0]) : "";
       setModelId(fallback);
       writeSetting("api_model", fallback);
     }
     emitModelsUpdate();
+  };
+
+  const handleAddProvider = () => {
+    const nextId = `provider_${Date.now()}`;
+    const nextName = `供应商 ${apiProviders.length + 1}`;
+    const next = [
+      ...apiProviders,
+      { id: nextId, name: nextName, url: "", key: "" }
+    ];
+    setApiProviders(next);
+    setProviderId(nextId);
+    setProviderName(nextName);
+    setApiUrl("");
+    setApiKey("");
+    setApiProviderDetailOpen(true);
+    writeSetting("opt_api_providers", JSON.stringify(next));
+  };
+
+  const openProviderDetail = (id) => {
+    const provider = apiProviders.find((p) => p.id === id);
+    if (!provider) return;
+    setProviderId(provider.id);
+    setProviderName(provider.name || "");
+    setApiUrl(provider.url || "");
+    setApiKey(provider.key || "");
+    setApiProviderDetailOpen(true);
+  };
+
+  const handleDeleteProvider = () => {
+    if (!providerId) return;
+    const current = Array.isArray(apiProviders) ? [...apiProviders] : [];
+    const nextProvidersRaw = current.filter((p) => p.id !== providerId);
+    const nextProviders = normalizeApiProviders(nextProvidersRaw);
+
+    const fallbackProvider = nextProviders[0] || null;
+    const nextAddedModels = normalizeAddedModels(
+      addedModels.filter((m) => m.providerId !== providerId),
+      nextProviders
+    );
+    const nextModelId = nextAddedModels[0] ? modelKeyOf(nextAddedModels[0]) : "";
+
+    setApiProviders(nextProviders);
+    setProviderId(fallbackProvider?.id || "");
+    setProviderName(fallbackProvider?.name || "");
+    setApiUrl(fallbackProvider?.url || "");
+    setApiKey(fallbackProvider?.key || "");
+    setApiProviderDetailOpen(false);
+    setAddedModels(nextAddedModels);
+    setModelId(nextModelId);
+
+    writeSetting("opt_api_providers", JSON.stringify(nextProviders));
+    writeSetting("api_url", fallbackProvider?.url || "");
+    writeSetting("api_key", fallbackProvider?.key || "");
+    writeSetting("opt_added_models", JSON.stringify(nextAddedModels));
+    writeSetting("api_model", nextModelId);
+    emitModelsUpdate();
+
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1200);
   };
 
   return (
@@ -3589,184 +4117,268 @@ function ToolsPage() {
         </label>
         <div className="tab-content bg-base-100 border-base-300 p-4">
         {tab === "api" && (
-          <div className="page-card">
-            <div className="page-card-title">API 设置</div>
-          <div className="form-row">
-          <label className="form-label" htmlFor="apiUrl">
-            API URL
-          </label>
-          <input
-            id="apiUrl"
-            className="form-input"
-            placeholder="https://example.com/v1/chat"
-            value={apiUrl}
-            onChange={(e) => setApiUrl(e.target.value)}
-          />
-        </div>
-        <div className="form-row">
-          <label className="form-label" htmlFor="apiKey">
-            API Key
-          </label>
-          <input
-            id="apiKey"
-            className="form-input"
-            placeholder="sk-..."
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-          />
-        </div>
-        <div className="form-row">
-          <label className="form-label" htmlFor="mcpUrl">
-            MCP 地址
-          </label>
-          <input
-            id="mcpUrl"
-            className="form-input"
-            placeholder="https://mcp.example.com/call"
-            value={mcpUrl}
-            onChange={(e) => setMcpUrl(e.target.value)}
-          />
-        </div>
-        <div className="form-row">
-          <label className="form-label">开启 MCP 工具</label>
-          <label className="form-toggle">
-            <input
-              type="checkbox"
-              checked={mcpEnabled}
-              onChange={(e) => setMcpEnabled(e.target.checked)}
-            />
-            <span>启用 MCP</span>
-          </label>
-        </div>
-        <div className="form-row">
-          <label className="form-label" htmlFor="mcpApiKey">
-            MCP Key
-          </label>
-          <input
-            id="mcpApiKey"
-            className="form-input"
-            placeholder="可选"
-            value={mcpApiKey}
-            onChange={(e) => setMcpApiKey(e.target.value)}
-          />
-        </div>
-        <div className="form-row">
-          <label className="form-label" htmlFor="webSearchUrl">
-            搜索地址
-          </label>
-          <input
-            id="webSearchUrl"
-            className="form-input"
-            placeholder="https://search.example.com?q={query}"
-            value={webSearchUrl}
-            onChange={(e) => setWebSearchUrl(e.target.value)}
-          />
-          <div className="form-hint">
-            如果包含 {`{query}`} 会用 GET，否则用 POST 发送 {"{query}"}。
-          </div>
-        </div>
-        <div className="form-row">
-          <label className="form-label">开启搜索工具</label>
-          <label className="form-toggle">
-            <input
-              type="checkbox"
-              checked={searchEnabled}
-              onChange={(e) => setSearchEnabled(e.target.checked)}
-            />
-            <span>启用搜索</span>
-          </label>
-        </div>
-        <div className="form-row">
-          <label className="form-label" htmlFor="webSearchApiKey">
-            搜索 Key
-          </label>
-          <input
-            id="webSearchApiKey"
-            className="form-input"
-            placeholder="可选"
-            value={webSearchApiKey}
-            onChange={(e) => setWebSearchApiKey(e.target.value)}
-          />
-        </div>
-        <button className="form-btn" type="button" onClick={handleSave}>
-          保存
-        </button>
-        {saved && <div className="form-hint">已保存</div>}
-        <div className="form-row">
-          <button className="form-btn" type="button" onClick={handleFetchModels}>
-            {loadingModels ? "加载中..." : "拉取模型列表"}
-          </button>
-          {modelError && <div className="form-error">{modelError}</div>}
-        </div>
-          {models.length > 0 && (
-            <div className="form-row">
-              <label className="form-label" htmlFor="modelCandidate">
-                从已拉取模型中添加
-              </label>
-              <select
-                id="modelCandidate"
-                className="form-input"
-                value={modelCandidate}
-                onChange={(e) => setModelCandidate(e.target.value)}
-              >
-                {models.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-              <button className="form-btn" type="button" onClick={handleAddModel}>
-                添加到已添加模型
-              </button>
-            </div>
-          )}
-          <div className="form-row">
-            <label className="form-label" htmlFor="modelId">
-              默认聊天模型
-            </label>
-            <select
-              id="modelId"
-              className="form-input"
-              value={modelId}
-              onChange={(e) => {
-                setModelId(e.target.value);
-                writeSetting("api_model", e.target.value);
-                emitModelsUpdate();
-              }}
-            >
-              <option value="">请选择</option>
-              {addedModels.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-            {addedModels.length === 0 && (
-              <div className="page-card-desc">请先从拉取的模型里添加</div>
-            )}
-          </div>
-          {addedModels.length > 0 && (
-            <div className="form-row">
-              <label className="form-label">已添加模型</label>
-              <div className="memory-list">
-                {addedModels.map((m) => (
-                  <div className="memory-item" key={m}>
-                    <div className="memory-text">{m}</div>
-                    <div className="memory-actions">
-                      <button
-                        className="form-btn ghost"
-                        type="button"
-                        onClick={() => handleRemoveModel(m)}
-                      >
-                        删除
-                      </button>
+          <>
+            {!apiProviderDetailOpen ? (
+              <>
+                <div className="page-card">
+                  <div className="page-card-title">供应商</div>
+                  <div className="form-row">
+                    {apiProviders.length === 0 && (
+                      <div className="page-card-desc">暂无供应商，先新增一个</div>
+                    )}
+                    {apiProviders.length > 0 && (
+                      <div className="overflow-x-auto">
+                        <table className="table">
+                          <thead>
+                            <tr>
+                              <th>#</th>
+                              <th>名称</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {apiProviders.map((p, idx) => (
+                              <tr
+                                key={p.id}
+                                className="cursor-pointer"
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => openProviderDetail(p.id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    openProviderDetail(p.id);
+                                  }
+                                }}
+                              >
+                                <th>{idx + 1}</th>
+                                <td>{p.name || p.id}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                  <div className="memory-actions">
+                    <button className="form-btn ghost" type="button" onClick={handleAddProvider}>
+                      新增供应商
+                    </button>
+                  </div>
+                </div>
+
+                <div className="page-card">
+                  <div className="page-card-title">MCP</div>
+                  <div className="form-row">
+                    <label className="form-label" htmlFor="mcpUrl">MCP 地址</label>
+                    <input
+                      id="mcpUrl"
+                      className="form-input"
+                      placeholder="https://mcp.example.com/call"
+                      value={mcpUrl}
+                      onChange={(e) => setMcpUrl(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-row">
+                    <label className="form-label">开启 MCP 工具</label>
+                    <label className="form-toggle">
+                      <input
+                        type="checkbox"
+                        checked={mcpEnabled}
+                        onChange={(e) => setMcpEnabled(e.target.checked)}
+                      />
+                      <span>启用 MCP</span>
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label className="form-label" htmlFor="mcpApiKey">MCP Key</label>
+                    <input
+                      id="mcpApiKey"
+                      className="form-input"
+                      placeholder="可选"
+                      value={mcpApiKey}
+                      onChange={(e) => setMcpApiKey(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="page-card">
+                  <div className="page-card-title">搜索</div>
+                  <div className="form-row">
+                    <label className="form-label" htmlFor="webSearchUrl">搜索地址</label>
+                    <input
+                      id="webSearchUrl"
+                      className="form-input"
+                      placeholder="https://search.example.com?q={query}"
+                      value={webSearchUrl}
+                      onChange={(e) => setWebSearchUrl(e.target.value)}
+                    />
+                    <div className="form-hint">
+                      如果包含 {`{query}`} 会用 GET，否则用 POST 发送 {"{query}"}。
                     </div>
                   </div>
-                ))}
+                  <div className="form-row">
+                    <label className="form-label">开启搜索工具</label>
+                    <label className="form-toggle">
+                      <input
+                        type="checkbox"
+                        checked={searchEnabled}
+                        onChange={(e) => setSearchEnabled(e.target.checked)}
+                      />
+                      <span>启用搜索</span>
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label className="form-label" htmlFor="webSearchApiKey">搜索 Key</label>
+                    <input
+                      id="webSearchApiKey"
+                      className="form-input"
+                      placeholder="可选"
+                      value={webSearchApiKey}
+                      onChange={(e) => setWebSearchApiKey(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                {mcpDirty && (
+                  <button className="form-btn" type="button" onClick={handleSaveMcp}>
+                    保存 MCP 设置
+                  </button>
+                )}
+                {searchDirty && (
+                  <button className="form-btn" type="button" onClick={handleSaveSearch}>
+                    保存搜索设置
+                  </button>
+                )}
+                {apiSavedHint && <div className="form-hint">{apiSavedHint}</div>}
+              </>
+            ) : (
+              <div className="page-card">
+                <div className="memory-actions">
+                  <button
+                    className="form-btn ghost"
+                    type="button"
+                    onClick={() => setApiProviderDetailOpen(false)}
+                  >
+                    返回供应商列表
+                  </button>
+                </div>
+                <div className="form-row">
+                  <label className="form-label" htmlFor="providerName">供应商名称</label>
+                  <input
+                    id="providerName"
+                    className="form-input"
+                    placeholder="例如 OpenAI / OpenRouter"
+                    value={providerName}
+                    onChange={(e) => setProviderName(e.target.value)}
+                  />
+                </div>
+                <div className="form-row">
+                  <label className="form-label" htmlFor="apiUrl">API URL</label>
+                  <input
+                    id="apiUrl"
+                    className="form-input"
+                    placeholder="https://example.com/v1/chat"
+                    value={apiUrl}
+                    onChange={(e) => setApiUrl(e.target.value)}
+                  />
+                </div>
+                <div className="form-row">
+                  <label className="form-label" htmlFor="apiKey">API Key</label>
+                  <input
+                    id="apiKey"
+                    className="form-input"
+                    placeholder="sk-..."
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                  />
+                </div>
+                {providerDirty && (
+                  <button className="form-btn" type="button" onClick={handleSaveProvider}>
+                    保存供应商
+                  </button>
+                )}
+                <button className="form-btn ghost" type="button" onClick={handleDeleteProvider}>
+                  删除当前供应商
+                </button>
+                {apiSavedHint && <div className="form-hint">{apiSavedHint}</div>}
+
+                <div className="form-row">
+                  <button className="form-btn" type="button" onClick={handleFetchModels}>
+                    {loadingModels ? "加载中..." : "拉取模型列表"}
+                  </button>
+                  {modelError && <div className="form-error">{modelError}</div>}
+                </div>
+                {models.length > 0 && (
+                  <div className="form-row">
+                    <label className="form-label" htmlFor="modelCandidate">
+                      从已拉取模型中添加
+                    </label>
+                    <select
+                      id="modelCandidate"
+                      className="form-input"
+                      value={modelCandidate}
+                      onChange={(e) => setModelCandidate(e.target.value)}
+                    >
+                      {models.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                    <button className="form-btn" type="button" onClick={handleAddModel}>
+                      添加到已添加模型
+                    </button>
+                  </div>
+                )}
+                <div className="form-row">
+                  <label className="form-label" htmlFor="modelId">默认聊天模型</label>
+                  <select
+                    id="modelId"
+                    className="form-input"
+                    value={modelId}
+                    onChange={(e) => {
+                      setModelId(e.target.value);
+                      writeSetting("api_model", e.target.value);
+                      emitModelsUpdate();
+                    }}
+                  >
+                    <option value="">请选择</option>
+                    {addedModels
+                      .filter((m) => m.providerId === providerId)
+                      .map((m) => (
+                        <option key={modelKeyOf(m)} value={modelKeyOf(m)}>
+                          {m.id}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <div className="form-row">
+                  <label className="form-label">当前供应商已添加模型</label>
+                  <div className="memory-list">
+                    {addedModels
+                      .filter((m) => m.providerId === providerId)
+                      .map((m) => (
+                        <div className="memory-item" key={modelKeyOf(m)}>
+                          <div className="memory-text">{m.id}</div>
+                          <div className="memory-actions">
+                            <button
+                              className="form-btn ghost"
+                              type="button"
+                              onClick={() => handleRemoveModel(modelKeyOf(m))}
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    {addedModels.filter((m) => m.providerId === providerId).length === 0 && (
+                      <div className="page-card-desc">当前供应商还没有已添加模型</div>
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
-          </div>
+            )}
+          </>
         )}
         </div>
 
@@ -3920,76 +4532,77 @@ function ToolsPage() {
                   <div className="page-card-desc">暂无记忆</div>
                 )}
                 {memoryList.map((item, idx) => (
-                  <div className="memory-item" key={`${item.content}-${idx}`}>
-                    {editingMemoryIndex === idx ? (
-                      <>
-                        <input
-                          className="form-input"
-                          value={editingMemoryText}
-                          onChange={(e) => setEditingMemoryText(e.target.value)}
-                        />
-                        <div className="memory-actions">
+                  <div
+                    className={`memory-item${memoryMenuIndex === idx ? " is-active" : ""}`}
+                    key={`${item.id ?? "local"}-${idx}`}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setMemoryMenuIndex(idx);
+                      setShowMemoryRename(false);
+                      setDeleteMemoryIndex(null);
+                    }}
+                    onTouchStart={() => {
+                      memoryPressTimerRef.current = setTimeout(() => {
+                        setMemoryMenuIndex(idx);
+                        setShowMemoryRename(false);
+                        setDeleteMemoryIndex(null);
+                      }, 550);
+                    }}
+                    onTouchEnd={() => {
+                      if (memoryPressTimerRef.current) {
+                        clearTimeout(memoryPressTimerRef.current);
+                        memoryPressTimerRef.current = null;
+                      }
+                    }}
+                    onTouchCancel={() => {
+                      if (memoryPressTimerRef.current) {
+                        clearTimeout(memoryPressTimerRef.current);
+                        memoryPressTimerRef.current = null;
+                      }
+                    }}
+                  >
+                    <div className="memory-time">
+                      ID: {item.id ?? "-"}
+                    </div>
+                    <div className="memory-text">{item.content}</div>
+                    <div className="memory-time">
+                      {formatDateTime(item.updatedAt)}
+                    </div>
+                    {memoryMenuIndex === idx && !showMemoryRename && (
+                      <ul
+                        className="menu dropdown-content session-dropdown memory-dropdown"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <li>
                           <button
-                            className="form-btn"
                             type="button"
-                            onClick={() => {
-                              const next = [...memoryList];
-                              const content = editingMemoryText.trim();
-                              if (content) {
-                                next[idx] = {
-                                  ...next[idx],
-                                  content,
-                                  updatedAt: Date.now()
-                                };
-                              }
-                              setMemoryList(next.filter((m) => m?.content));
-                              setEditingMemoryIndex(null);
-                              setEditingMemoryText("");
-                            }}
-                          >
-                            保存
-                          </button>
-                          <button
-                            className="form-btn ghost"
-                            type="button"
-                            onClick={() => {
-                              setEditingMemoryIndex(null);
-                              setEditingMemoryText("");
-                            }}
-                          >
-                            取消
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="memory-text">{item.content}</div>
-                        <div className="memory-time">
-                          {formatDateTime(item.updatedAt)}
-                        </div>
-                        <div className="memory-actions">
-                          <button
-                            className="form-btn"
-                            type="button"
-                            onClick={() => {
+                            onClick={(e) => {
+                              e.stopPropagation();
                               setEditingMemoryIndex(idx);
                               setEditingMemoryText(item.content);
+                              setShowMemoryRename(true);
+                              setDeleteMemoryIndex(null);
                             }}
                           >
-                            修改
+                            <Pencil className="h-4 w-4" />
+                            <span className="session-menu-text">修改</span>
                           </button>
+                        </li>
+                        <li>
                           <button
-                            className="form-btn ghost"
                             type="button"
-                            onClick={() => {
-                              const next = memoryList.filter((_, i) => i !== idx);
-                              setMemoryList(next);
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteMemoryIndex(idx);
+                              setMemoryMenuIndex(null);
+                              setShowMemoryRename(false);
                             }}
                           >
-                            删除
+                            <Trash2 className="h-4 w-4" />
+                            <span className="session-menu-text">删除</span>
                           </button>
-                        </div>
-                      </>
+                        </li>
+                      </ul>
                     )}
                   </div>
                 ))}
@@ -4014,6 +4627,12 @@ function ToolsPage() {
                   添加
                 </button>
               </div>
+              <div className="memory-actions" style={{ marginTop: "8px" }}>
+                <button className="form-btn" type="button" onClick={handleSaveMemories}>
+                  保存记忆到云端
+                </button>
+              </div>
+              {memorySyncText && <div className="form-hint">{memorySyncText}</div>}
             </div>
             <div className="form-row">
               <label className="form-label" htmlFor="messageTemplate">
@@ -4091,7 +4710,7 @@ function ToolsPage() {
                 <span>启用流式</span>
               </label>
             </div>
-            <button className="form-btn" type="button" onClick={handleSave}>
+            <button className="form-btn" type="button" onClick={handleSavePersonal}>
               保存
             </button>
             {saved && <div className="form-hint">已保存</div>}
@@ -4184,8 +4803,75 @@ function ToolsPage() {
           </div>
         )}
         </div>
+        </div>
       </div>
-    </div>
+      {memoryMenuIndex != null && showMemoryRename && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            setShowMemoryRename(false);
+            setMemoryMenuIndex(null);
+            setEditingMemoryIndex(null);
+            setEditingMemoryText("");
+          }}
+        >
+          <div className="app-modal rename-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rename-content">
+              <div className="rename-title">修改记忆</div>
+              <input
+                type="text"
+                className="input rename-input"
+                placeholder="输入新的内容"
+                value={editingMemoryText}
+                onChange={(e) => setEditingMemoryText(e.target.value)}
+              />
+              <div className="modal-actions">
+                <button
+                  className="btn btn-outline btn-sm"
+                  type="button"
+                  onClick={() => {
+                    setShowMemoryRename(false);
+                    setMemoryMenuIndex(null);
+                    setEditingMemoryIndex(null);
+                    setEditingMemoryText("");
+                  }}
+                >
+                  取消
+                </button>
+                <button className="btn btn-outline btn-sm" type="button" onClick={handleMemoryRename}>
+                  确认
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {deleteMemoryIndex != null && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            setDeleteMemoryIndex(null);
+          }}
+        >
+          <div className="app-modal rename-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rename-content">
+              <div className="rename-title">确认删除该记忆？</div>
+              <div className="modal-actions">
+                <button
+                  className="btn btn-outline btn-sm"
+                  type="button"
+                  onClick={() => setDeleteMemoryIndex(null)}
+                >
+                  取消
+                </button>
+                <button className="btn btn-outline btn-sm" type="button" onClick={handleMemoryDelete}>
+                  确认
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -4696,6 +5382,7 @@ export default function App() {
     (async () => {
       try {
         await hydrateSettingsFromSupabase();
+        await loadMemoriesFromSupabase();
       } finally {
         if (active) setSettingsReady(true);
       }
