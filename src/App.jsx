@@ -264,25 +264,22 @@ const mapMessagesForDb = (session) => {
 };
 
 const fetchSessionsRows = async () => {
-  let data = null;
-  let error = null;
-  ({ data, error } = await supabase
-    .from("chat_sessions")
-    .select("id,title,created_at,updated_at,data")
-    .order("updated_at", { ascending: false }));
-  if (error && String(error.message || "").includes("created_at")) {
-    ({ data, error } = await supabase
+  const selectPlans = [
+    "id,title,created_at,updated_at",
+    "id,title,updated_at",
+    "id,title,created_at,updated_at,data",
+    "id,title,updated_at,data"
+  ];
+  let lastError = null;
+  for (const selectClause of selectPlans) {
+    const { data, error } = await supabase
       .from("chat_sessions")
-      .select("id,title,updated_at,data")
-      .order("updated_at", { ascending: false }));
+      .select(selectClause)
+      .order("updated_at", { ascending: false });
+    if (!error) return { data, error: null };
+    lastError = error;
   }
-  if (error && String(error.message || "").includes("data")) {
-    ({ data, error } = await supabase
-      .from("chat_sessions")
-      .select("id,title,created_at,updated_at")
-      .order("updated_at", { ascending: false }));
-  }
-  return { data, error };
+  return { data: null, error: lastError };
 };
 
 const fetchMessagesRows = async () => {
