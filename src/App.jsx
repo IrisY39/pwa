@@ -10,14 +10,16 @@ import {
   Copy,
   SquarePen,
   Trash2,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Pencil,
   Check,
   Wrench,
   BookHeart,
-  FileClock
+  FileClock,
+  Bot,
+  Earth,
+  Sparkles
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -982,8 +984,11 @@ function ChatPage() {
   const [chatModels, setChatModels] = useState(() => {
     const providers = readApiProvidersFromLocal();
     try {
-      return normalizeAddedModels(
-        JSON.parse(readSetting("opt_added_models", "[]")),
+      return filterModelsByEnabledProviders(
+        normalizeAddedModels(
+          JSON.parse(readSetting("opt_added_models", "[]")),
+          providers
+        ),
         providers
       );
     } catch {
@@ -992,6 +997,26 @@ function ChatPage() {
   });
   const [chatModelId, setChatModelId] = useState(() => readSetting("api_model"));
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const groupedChatModels = useMemo(() => {
+    const providers = readApiProvidersFromLocal();
+    const providerNameMap = new Map(
+      (Array.isArray(providers) ? providers : []).map((p) => [
+        String(p.id || ""),
+        String(p.name || p.id || "未命名供应商")
+      ])
+    );
+    const groups = new Map();
+    for (const m of Array.isArray(chatModels) ? chatModels : []) {
+      const pid = String(m.providerId || "");
+      if (!groups.has(pid)) groups.set(pid, []);
+      groups.get(pid).push(m);
+    }
+    return Array.from(groups.entries()).map(([providerId, models]) => ({
+      providerId,
+      providerName: providerNameMap.get(providerId) || providerId || "未命名供应商",
+      models
+    }));
+  }, [chatModels]);
   const [messages, setMessages] = useState(() => []);
   const appendMsg = (msg) =>
     setMessages((prev) => [...prev, ensureMessageId(msg)]);
@@ -1453,8 +1478,11 @@ function ChatPage() {
     const providers = readApiProvidersFromLocal();
     try {
       setChatModels(
-        normalizeAddedModels(
-          JSON.parse(readSetting("opt_added_models", "[]")),
+        filterModelsByEnabledProviders(
+          normalizeAddedModels(
+            JSON.parse(readSetting("opt_added_models", "[]")),
+            providers
+          ),
           providers
         )
       );
@@ -1469,8 +1497,11 @@ function ChatPage() {
       const providers = readApiProvidersFromLocal();
       try {
         setChatModels(
-          normalizeAddedModels(
-            JSON.parse(readSetting("opt_added_models", "[]")),
+          filterModelsByEnabledProviders(
+            normalizeAddedModels(
+              JSON.parse(readSetting("opt_added_models", "[]")),
+              providers
+            ),
             providers
           )
         );
@@ -1486,7 +1517,7 @@ function ChatPage() {
     const onClick = (event) => {
       if (!modelMenuOpen) return;
       const target = event.target;
-      if (target instanceof Element && target.closest(".navbar")) {
+      if (target instanceof Element && target.closest(".model-picker-dropdown")) {
         return;
       }
       setModelMenuOpen(false);
@@ -3144,49 +3175,10 @@ function ChatPage() {
             <div className="navbar-title-text">
               {assistantName || "Kelivo Chat"}
             </div>
-            <div className="dropdown dropdown-center">
-              <div
-                tabIndex={0}
-                role="button"
-                className="btn m-1 chat-model-sub-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setModelMenuOpen((v) => !v);
-                }}
-              >
-                <span className="chat-model-label">
-                  {findAddedModelBySelection(chatModels, chatModelId)?.id ||
-                    chatModelId ||
-                    "未选择聊天模型"}
-                </span>
-                <ChevronDown className="h-3 w-3 chat-model-caret" />
-              </div>
-              <ul
-                tabIndex={-1}
-                className="dropdown-content menu bg-base-100 rounded-box z-[50] mt-2 w-56 p-2 shadow-sm"
-              >
-                {chatModels.length === 0 && (
-                  <li className="disabled">
-                    <a>暂无已添加模型</a>
-                  </li>
-                )}
-                {chatModels.map((m) => (
-                  <li key={modelKeyOf(m)}>
-                    <button
-                      type="button"
-                      className={chatModelId === modelKeyOf(m) ? "active" : ""}
-                      onClick={() => {
-                        const nextValue = modelKeyOf(m);
-                        setChatModelId(nextValue);
-                        writeSetting("api_model", nextValue);
-                        emitModelsUpdate();
-                      }}
-                    >
-                      {m.id}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+            <div className="chat-model-sub">
+              {findAddedModelBySelection(chatModels, chatModelId)?.id ||
+                chatModelId ||
+                "未选择聊天模型"}
             </div>
           </div>
         </div>
@@ -3217,85 +3209,6 @@ function ChatPage() {
         </div>
       </div>
       <div className="composer-bar">
-        <div className="fab composer-fab">
-          <div
-            tabIndex={0}
-            role="button"
-            className="btn btn-circle btn-secondary composer-fab-main"
-          >
-            <svg
-              aria-label="New"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth="2"
-              stroke="currentColor"
-              className="size-5"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M12 4.5v15m7.5-7.5h-15"
-              />
-            </svg>
-          </div>
-          <button className="btn btn-circle composer-fab-item" type="button">
-            <svg
-              aria-label="Camera"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth="1.5"
-              stroke="currentColor"
-              className="size-5"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z"
-              />
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z"
-              />
-            </svg>
-          </button>
-          <button className="btn btn-circle composer-fab-item" type="button">
-            <svg
-              aria-label="Gallery"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth="1.5"
-              stroke="currentColor"
-              className="size-5"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
-              />
-            </svg>
-          </button>
-          <button className="btn btn-circle composer-fab-item" type="button">
-            <svg
-              aria-label="Voice"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth="1.5"
-              stroke="currentColor"
-              className="size-5"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z"
-              />
-            </svg>
-          </button>
-        </div>
         <div className="composer-input-wrap">
           <textarea
             ref={inputRef}
@@ -3314,29 +3227,88 @@ function ChatPage() {
             rows={1}
             disabled={isGenerating}
           />
-          <button
-            className={`composer-send-btn ${
-              isGenerating || inputValue.trim() ? "is-ready" : ""
-            }`}
-            type="button"
-            onClick={isGenerating ? handleStopGenerate : handleSend}
-            disabled={!isGenerating && !inputValue.trim()}
-            aria-label={isGenerating ? "停止生成" : "发送"}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="18"
-              height="18"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+          <div className="composer-icons-row">
+            <div className="composer-icons-group">
+              <div className="dropdown dropdown-top model-picker-dropdown">
+                <button
+                  className="composer-inline-icon btn btn-ghost"
+                  type="button"
+                  aria-label="选择聊天模型"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setModelMenuOpen((v) => !v);
+                  }}
+                >
+                  <Bot className="h-5 w-5" />
+                </button>
+                {modelMenuOpen && (
+                  <ul
+                    tabIndex={-1}
+                    className="dropdown-content menu bg-base-100 rounded-box z-[80] mb-2 w-64 p-2 shadow-sm"
+                  >
+                    {groupedChatModels.length === 0 && (
+                      <li className="disabled">
+                        <span>暂无已添加模型</span>
+                      </li>
+                    )}
+                    {groupedChatModels.map((group) => (
+                      <li key={group.providerId || group.providerName}>
+                        <div className="menu-title px-2 py-1">{group.providerName}</div>
+                        <ul>
+                          {group.models.map((m) => (
+                            <li key={modelKeyOf(m)}>
+                              <button
+                                type="button"
+                                className={chatModelId === modelKeyOf(m) ? "active" : ""}
+                                onClick={() => {
+                                  const nextValue = modelKeyOf(m);
+                                  setChatModelId(nextValue);
+                                  writeSetting("api_model", nextValue);
+                                  emitModelsUpdate();
+                                  setModelMenuOpen(false);
+                                }}
+                              >
+                                {m.id}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <button className="composer-inline-icon btn btn-ghost" type="button" aria-label="Earth">
+                <Earth className="h-5 w-5" />
+              </button>
+              <button className="composer-inline-icon btn btn-ghost" type="button" aria-label="Sparkles">
+                <Sparkles className="h-5 w-5" />
+              </button>
+            </div>
+            <button
+              className={`composer-send-btn ${
+                isGenerating || inputValue.trim() ? "is-ready" : ""
+              }`}
+              type="button"
+              onClick={isGenerating ? handleStopGenerate : handleSend}
+              disabled={!isGenerating && !inputValue.trim()}
+              aria-label={isGenerating ? "停止生成" : "发送"}
             >
-              <path d="M22 2L11 13" />
-              <path d="M22 2L15 22L11 13L2 9L22 2Z" />
-            </svg>
-          </button>
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M22 2L11 13" />
+                <path d="M22 2L15 22L11 13L2 9L22 2Z" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
       {showBackBottom && (
@@ -3521,6 +3493,9 @@ function ToolsPage() {
   const [providerName, setProviderName] = useState(
     () => initialProviders[0]?.name || ""
   );
+  const [providerEnabled, setProviderEnabled] = useState(() =>
+    initialProviders[0]?.enabled !== false
+  );
   const [apiProviderDetailOpen, setApiProviderDetailOpen] = useState(false);
   const [apiUrl, setApiUrl] = useState(
     () => initialProviders[0]?.url || readSetting("api_url")
@@ -3576,6 +3551,18 @@ function ToolsPage() {
   );
   const [systemPrompt, setSystemPrompt] = useState(() => readSetting("opt_system_prompt"));
   const [messageTemplate, setMessageTemplate] = useState(() => readSetting("opt_message_template"));
+  const [uiFontChat, setUiFontChat] = useState(
+    () => readSetting("ui_font_chat") || "21"
+  );
+  const [uiFontNavbar, setUiFontNavbar] = useState(
+    () => readSetting("ui_font_navbar") || "20"
+  );
+  const [uiFontSmall, setUiFontSmall] = useState(
+    () => readSetting("ui_font_small") || "14"
+  );
+  const [uiFontBody, setUiFontBody] = useState(
+    () => readSetting("ui_font_body") || "16"
+  );
   const [searchEnabled, setSearchEnabled] = useState(
     () => readSetting("opt_search_enabled") !== "false"
   );
@@ -3590,10 +3577,46 @@ function ToolsPage() {
   const [editingMemoryIndex, setEditingMemoryIndex] = useState(null);
   const [editingMemoryText, setEditingMemoryText] = useState("");
   const [memorySyncText, setMemorySyncText] = useState("");
+  const [avatarCropOpen, setAvatarCropOpen] = useState(false);
+  const [avatarCropSrc, setAvatarCropSrc] = useState("");
+  const [avatarCropTarget, setAvatarCropTarget] = useState("assistant");
+  const [avatarCropZoom, setAvatarCropZoom] = useState(1);
+  const [avatarCropX, setAvatarCropX] = useState(0);
+  const [avatarCropY, setAvatarCropY] = useState(0);
+  const [avatarNaturalSize, setAvatarNaturalSize] = useState({ w: 0, h: 0 });
+  const avatarCropImgRef = useRef(null);
+  const AVATAR_CROP_FRAME = 240;
+
+  useEffect(() => {
+    const clamp = (value, min, max, fallback) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.min(max, Math.max(min, n));
+    };
+    const chat = clamp(uiFontChat, 14, 30, 21);
+    const navbar = clamp(uiFontNavbar, 16, 32, 20);
+    const small = clamp(uiFontSmall, 10, 20, 14);
+    const body = clamp(uiFontBody, 12, 24, 16);
+
+    document.documentElement.style.setProperty("--ui-font-chat", `${chat}px`);
+    document.documentElement.style.setProperty("--ui-font-navbar", `${navbar}px`);
+    document.documentElement.style.setProperty("--ui-font-small", `${small}px`);
+    document.documentElement.style.setProperty("--ui-font-body", `${body}px`);
+
+    writeSetting("ui_font_chat", String(chat));
+    writeSetting("ui_font_navbar", String(navbar));
+    writeSetting("ui_font_small", String(small));
+    writeSetting("ui_font_body", String(body));
+  }, [uiFontChat, uiFontNavbar, uiFontSmall, uiFontBody]);
   const [memoryMenuIndex, setMemoryMenuIndex] = useState(null);
   const [showMemoryRename, setShowMemoryRename] = useState(false);
   const [deleteMemoryIndex, setDeleteMemoryIndex] = useState(null);
   const memoryPressTimerRef = useRef(null);
+  const providerIdRef = useRef(providerId);
+
+  useEffect(() => {
+    providerIdRef.current = providerId;
+  }, [providerId]);
 
   useEffect(() => {
     if (!providerId) return;
@@ -3602,6 +3625,7 @@ function ToolsPage() {
     setProviderName(provider.name || "");
     setApiUrl(provider.url || "");
     setApiKey(provider.key || "");
+    setProviderEnabled(provider.enabled !== false);
   }, [providerId, apiProviders]);
 
   const currentProvider = useMemo(
@@ -3612,7 +3636,8 @@ function ToolsPage() {
     !!currentProvider &&
     (providerName.trim() !== String(currentProvider.name || "").trim() ||
       apiUrl.trim() !== String(currentProvider.url || "").trim() ||
-      apiKey.trim() !== String(currentProvider.key || "").trim());
+      apiKey.trim() !== String(currentProvider.key || "").trim() ||
+      providerEnabled !== (currentProvider.enabled !== false));
   const mcpDirty =
     mcpUrl.trim() !== readSetting("mcp_url").trim() ||
     mcpApiKey.trim() !== readSetting("mcp_api_key").trim() ||
@@ -3626,11 +3651,15 @@ function ToolsPage() {
     const syncFromLocal = () => {
       const providers = readApiProvidersFromLocal();
       setApiProviders(providers);
-      const keep = providers.find((p) => p.id === providerId) || providers[0] || null;
+      const keep =
+        providers.find((p) => p.id === providerIdRef.current) ||
+        providers[0] ||
+        null;
       setProviderId(keep?.id || "");
-      setProviderName(keep?.name || "");
-      setApiUrl(keep?.url || readSetting("api_url"));
-      setApiKey(keep?.key || readSetting("api_key"));
+      setProviderName(keep?.name ?? "");
+      setApiUrl(keep?.url ?? readSetting("api_url"));
+      setApiKey(keep?.key ?? readSetting("api_key"));
+      setProviderEnabled(keep?.enabled !== false);
       try {
         setAddedModels(
           normalizeAddedModels(
@@ -3819,7 +3848,8 @@ function ToolsPage() {
       id: trimmedProviderId,
       name: String(providerName || "").trim() || trimmedProviderId,
       url: apiUrl.trim(),
-      key: apiKey.trim()
+      key: apiKey.trim(),
+      enabled: providerEnabled
     };
     if (existingIdx >= 0) {
       nextProvidersRaw[existingIdx] = nextProvider;
@@ -3925,8 +3955,13 @@ function ToolsPage() {
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = String(reader.result || "");
-      setAssistantAvatar(dataUrl);
-      writeSetting("opt_assistant_avatar", dataUrl);
+      setAvatarCropTarget("assistant");
+      setAvatarCropSrc(dataUrl);
+      setAvatarCropZoom(1);
+      setAvatarCropX(0);
+      setAvatarCropY(0);
+      setAvatarNaturalSize({ w: 0, h: 0 });
+      setAvatarCropOpen(true);
     };
     reader.readAsDataURL(file);
     event.target.value = "";
@@ -3938,11 +3973,79 @@ function ToolsPage() {
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = String(reader.result || "");
-      setUserAvatar(dataUrl);
-      writeSetting("opt_user_avatar", dataUrl);
+      setAvatarCropTarget("user");
+      setAvatarCropSrc(dataUrl);
+      setAvatarCropZoom(1);
+      setAvatarCropX(0);
+      setAvatarCropY(0);
+      setAvatarNaturalSize({ w: 0, h: 0 });
+      setAvatarCropOpen(true);
     };
     reader.readAsDataURL(file);
     event.target.value = "";
+  };
+
+  const avatarCropMetrics = useMemo(() => {
+    const w = avatarNaturalSize.w || 1;
+    const h = avatarNaturalSize.h || 1;
+    const baseScale = Math.max(AVATAR_CROP_FRAME / w, AVATAR_CROP_FRAME / h);
+    const scale = baseScale * avatarCropZoom;
+    const drawW = w * scale;
+    const drawH = h * scale;
+    const maxOffsetX = Math.max(0, (drawW - AVATAR_CROP_FRAME) / 2);
+    const maxOffsetY = Math.max(0, (drawH - AVATAR_CROP_FRAME) / 2);
+    return { scale, drawW, drawH, maxOffsetX, maxOffsetY };
+  }, [avatarNaturalSize, avatarCropZoom]);
+
+  useEffect(() => {
+    if (!avatarCropOpen) return;
+    setAvatarCropX((v) =>
+      Math.max(-avatarCropMetrics.maxOffsetX, Math.min(avatarCropMetrics.maxOffsetX, v))
+    );
+    setAvatarCropY((v) =>
+      Math.max(-avatarCropMetrics.maxOffsetY, Math.min(avatarCropMetrics.maxOffsetY, v))
+    );
+  }, [avatarCropMetrics.maxOffsetX, avatarCropMetrics.maxOffsetY, avatarCropOpen]);
+
+  const handleConfirmAvatarCrop = () => {
+    const img = avatarCropImgRef.current;
+    if (!img || !avatarNaturalSize.w || !avatarNaturalSize.h) return;
+    const { scale, maxOffsetX, maxOffsetY } = avatarCropMetrics;
+    const clampedX = Math.max(-maxOffsetX, Math.min(maxOffsetX, avatarCropX));
+    const clampedY = Math.max(-maxOffsetY, Math.min(maxOffsetY, avatarCropY));
+    const drawW = avatarNaturalSize.w * scale;
+    const drawH = avatarNaturalSize.h * scale;
+    const left = (AVATAR_CROP_FRAME - drawW) / 2 + clampedX;
+    const top = (AVATAR_CROP_FRAME - drawH) / 2 + clampedY;
+    const sx = (0 - left) / scale;
+    const sy = (0 - top) / scale;
+    const sSize = AVATAR_CROP_FRAME / scale;
+
+    const outSize = 512;
+    const canvas = document.createElement("canvas");
+    canvas.width = outSize;
+    canvas.height = outSize;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, outSize, outSize);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(outSize / 2, outSize / 2, outSize / 2, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, outSize, outSize);
+    ctx.restore();
+
+    const dataUrl = canvas.toDataURL("image/png");
+    if (avatarCropTarget === "assistant") {
+      setAssistantAvatar(dataUrl);
+      writeSetting("opt_assistant_avatar", dataUrl);
+    } else {
+      setUserAvatar(dataUrl);
+      writeSetting("opt_user_avatar", dataUrl);
+    }
+    setAvatarCropOpen(false);
   };
 
   const handleClearLogs = () => {
@@ -4032,21 +4135,24 @@ function ToolsPage() {
       { id: nextId, name: nextName, url: "", key: "" }
     ];
     setApiProviders(next);
+    providerIdRef.current = nextId;
     setProviderId(nextId);
     setProviderName(nextName);
     setApiUrl("");
     setApiKey("");
+    setProviderEnabled(true);
     setApiProviderDetailOpen(true);
-    writeSetting("opt_api_providers", JSON.stringify(next));
   };
 
   const openProviderDetail = (id) => {
     const provider = apiProviders.find((p) => p.id === id);
     if (!provider) return;
+    providerIdRef.current = provider.id;
     setProviderId(provider.id);
     setProviderName(provider.name || "");
     setApiUrl(provider.url || "");
     setApiKey(provider.key || "");
+    setProviderEnabled(provider.enabled !== false);
     setApiProviderDetailOpen(true);
   };
 
@@ -4064,10 +4170,12 @@ function ToolsPage() {
     const nextModelId = nextAddedModels[0] ? modelKeyOf(nextAddedModels[0]) : "";
 
     setApiProviders(nextProviders);
+    providerIdRef.current = fallbackProvider?.id || "";
     setProviderId(fallbackProvider?.id || "");
     setProviderName(fallbackProvider?.name || "");
     setApiUrl(fallbackProvider?.url || "");
     setApiKey(fallbackProvider?.key || "");
+    setProviderEnabled(fallbackProvider?.enabled !== false);
     setApiProviderDetailOpen(false);
     setAddedModels(nextAddedModels);
     setModelId(nextModelId);
@@ -4104,7 +4212,7 @@ function ToolsPage() {
         <div className="navbar-end" />
       </div>
       <div className="page-shell">
-      <div className="tabs tabs-lift">
+      <div className="tabs tabs-border">
         <label className="tab">
           <input
             type="radio"
@@ -4115,7 +4223,7 @@ function ToolsPage() {
           <Wrench className="size-4 me-2" />
           API 设置
         </label>
-        <div className="tab-content bg-base-100 border-base-300 p-4">
+        <div className="tab-content p-2 bg-transparent border-0">
         {tab === "api" && (
           <>
             {!apiProviderDetailOpen ? (
@@ -4129,12 +4237,6 @@ function ToolsPage() {
                     {apiProviders.length > 0 && (
                       <div className="overflow-x-auto">
                         <table className="table">
-                          <thead>
-                            <tr>
-                              <th>#</th>
-                              <th>名称</th>
-                            </tr>
-                          </thead>
                           <tbody>
                             {apiProviders.map((p, idx) => (
                               <tr
@@ -4239,6 +4341,33 @@ function ToolsPage() {
                   </div>
                 </div>
 
+                <div className="page-card">
+                  <div className="page-card-title">默认聊天模型</div>
+                  <div className="form-row">
+                    <select
+                      id="modelId"
+                      className="form-input"
+                      value={modelId}
+                      onChange={(e) => {
+                        setModelId(e.target.value);
+                        writeSetting("api_model", e.target.value);
+                        emitModelsUpdate();
+                      }}
+                    >
+                      <option value="">请选择</option>
+                      {addedModels
+                        .filter((m) =>
+                          (apiProviders.find((p) => p.id === m.providerId)?.enabled !== false)
+                        )
+                        .map((m) => (
+                          <option key={modelKeyOf(m)} value={modelKeyOf(m)}>
+                            {m.id} ({apiProviders.find((p) => p.id === m.providerId)?.name || m.providerId})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+
                 {mcpDirty && (
                   <button className="form-btn" type="button" onClick={handleSaveMcp}>
                     保存 MCP 设置
@@ -4252,14 +4381,15 @@ function ToolsPage() {
                 {apiSavedHint && <div className="form-hint">{apiSavedHint}</div>}
               </>
             ) : (
-              <div className="page-card">
+              <div className="page-card provider-detail-card">
                 <div className="memory-actions">
                   <button
                     className="form-btn ghost"
                     type="button"
                     onClick={() => setApiProviderDetailOpen(false)}
+                    aria-label="返回供应商列表"
                   >
-                    返回供应商列表
+                    <ArrowBigLeft className="h-5 w-5" />
                   </button>
                 </div>
                 <div className="form-row">
@@ -4292,22 +4422,24 @@ function ToolsPage() {
                     onChange={(e) => setApiKey(e.target.value)}
                   />
                 </div>
+                <div className="form-row">
+                  <div className="form-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>是否启用</span>
+                    <input
+                      type="checkbox"
+                      className="toggle"
+                      checked={providerEnabled}
+                      onChange={(e) => setProviderEnabled(e.target.checked)}
+                    />
+                  </div>
+                </div>
                 {providerDirty && (
                   <button className="form-btn" type="button" onClick={handleSaveProvider}>
                     保存供应商
                   </button>
                 )}
-                <button className="form-btn ghost" type="button" onClick={handleDeleteProvider}>
-                  删除当前供应商
-                </button>
                 {apiSavedHint && <div className="form-hint">{apiSavedHint}</div>}
-
-                <div className="form-row">
-                  <button className="form-btn" type="button" onClick={handleFetchModels}>
-                    {loadingModels ? "加载中..." : "拉取模型列表"}
-                  </button>
-                  {modelError && <div className="form-error">{modelError}</div>}
-                </div>
+                {modelError && <div className="form-error">{modelError}</div>}
                 {models.length > 0 && (
                   <div className="form-row">
                     <label className="form-label" htmlFor="modelCandidate">
@@ -4330,28 +4462,6 @@ function ToolsPage() {
                     </button>
                   </div>
                 )}
-                <div className="form-row">
-                  <label className="form-label" htmlFor="modelId">默认聊天模型</label>
-                  <select
-                    id="modelId"
-                    className="form-input"
-                    value={modelId}
-                    onChange={(e) => {
-                      setModelId(e.target.value);
-                      writeSetting("api_model", e.target.value);
-                      emitModelsUpdate();
-                    }}
-                  >
-                    <option value="">请选择</option>
-                    {addedModels
-                      .filter((m) => m.providerId === providerId)
-                      .map((m) => (
-                        <option key={modelKeyOf(m)} value={modelKeyOf(m)}>
-                          {m.id}
-                        </option>
-                      ))}
-                  </select>
-                </div>
                 <div className="form-row">
                   <label className="form-label">当前供应商已添加模型</label>
                   <div className="memory-list">
@@ -4376,6 +4486,14 @@ function ToolsPage() {
                     )}
                   </div>
                 </div>
+                <div className="provider-detail-fab">
+                  <button className="btn btn-outline" type="button" onClick={handleDeleteProvider}>
+                    删除供应商
+                  </button>
+                  <button className="btn" type="button" onClick={handleFetchModels}>
+                    {loadingModels ? "加载中..." : "拉取模型"}
+                  </button>
+                </div>
               </div>
             )}
           </>
@@ -4392,7 +4510,7 @@ function ToolsPage() {
           <BookHeart className="size-4 me-2" />
           个性化
         </label>
-        <div className="tab-content bg-base-100 border-base-300 p-4">
+        <div className="tab-content p-2 bg-transparent border-0">
         {tab === "personal" && (
           <div className="page-card">
             <div className="page-card-title">个性化设置</div>
@@ -4710,6 +4828,67 @@ function ToolsPage() {
                 <span>启用流式</span>
               </label>
             </div>
+            <div className="page-card">
+              <div className="page-card-title">字号调节（临时）</div>
+              <div className="form-row">
+                <label className="form-label">聊天正文（消息/输入框）: {uiFontChat}px</label>
+                <input
+                  type="range"
+                  min="14"
+                  max="30"
+                  step="1"
+                  value={uiFontChat}
+                  onChange={(e) => setUiFontChat(e.target.value)}
+                />
+              </div>
+              <div className="form-row">
+                <label className="form-label">导航栏标题: {uiFontNavbar}px</label>
+                <input
+                  type="range"
+                  min="16"
+                  max="32"
+                  step="1"
+                  value={uiFontNavbar}
+                  onChange={(e) => setUiFontNavbar(e.target.value)}
+                />
+              </div>
+              <div className="form-row">
+                <label className="form-label">小字号（时间/ID/模型名）: {uiFontSmall}px</label>
+                <input
+                  type="range"
+                  min="10"
+                  max="20"
+                  step="1"
+                  value={uiFontSmall}
+                  onChange={(e) => setUiFontSmall(e.target.value)}
+                />
+              </div>
+              <div className="form-row">
+                <label className="form-label">其他正文字号（全局）: {uiFontBody}px</label>
+                <input
+                  type="range"
+                  min="12"
+                  max="24"
+                  step="1"
+                  value={uiFontBody}
+                  onChange={(e) => setUiFontBody(e.target.value)}
+                />
+              </div>
+              <div className="memory-actions">
+                <button
+                  className="form-btn ghost"
+                  type="button"
+                  onClick={() => {
+                    setUiFontChat("21");
+                    setUiFontNavbar("20");
+                    setUiFontSmall("14");
+                    setUiFontBody("16");
+                  }}
+                >
+                  恢复默认
+                </button>
+              </div>
+            </div>
             <button className="form-btn" type="button" onClick={handleSavePersonal}>
               保存
             </button>
@@ -4728,7 +4907,7 @@ function ToolsPage() {
           <FileClock className="size-4 me-2" />
           日志
         </label>
-        <div className="tab-content bg-base-100 border-base-300 p-4">
+        <div className="tab-content p-2 bg-transparent border-0">
         {tab === "logs" && (
           <div className="page-card">
             <div className="page-card-title">请求日志</div>
@@ -4805,6 +4984,76 @@ function ToolsPage() {
         </div>
         </div>
       </div>
+      {avatarCropOpen && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setAvatarCropOpen(false)}
+        >
+          <div className="app-modal rename-modal avatar-crop-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rename-title">裁剪头像</div>
+            <div className="avatar-crop-frame-wrap">
+              <div className="avatar-crop-frame">
+                {avatarCropSrc && (
+                  <img
+                    ref={avatarCropImgRef}
+                    src={avatarCropSrc}
+                    alt="avatar crop"
+                    onLoad={(e) => {
+                      const img = e.currentTarget;
+                      setAvatarNaturalSize({
+                        w: img.naturalWidth || 0,
+                        h: img.naturalHeight || 0
+                      });
+                    }}
+                    style={{
+                      width: `${avatarCropMetrics.drawW}px`,
+                      height: `${avatarCropMetrics.drawH}px`,
+                      transform: `translate(${avatarCropX}px, ${avatarCropY}px)`
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+            <div className="form-row avatar-crop-controls">
+              <label className="form-label">缩放</label>
+              <input
+                type="range"
+                min="1"
+                max="3"
+                step="0.01"
+                value={avatarCropZoom}
+                onChange={(e) => setAvatarCropZoom(Number(e.target.value))}
+              />
+              <label className="form-label">左右</label>
+              <input
+                type="range"
+                min={-avatarCropMetrics.maxOffsetX}
+                max={avatarCropMetrics.maxOffsetX}
+                step="1"
+                value={avatarCropX}
+                onChange={(e) => setAvatarCropX(Number(e.target.value))}
+              />
+              <label className="form-label">上下</label>
+              <input
+                type="range"
+                min={-avatarCropMetrics.maxOffsetY}
+                max={avatarCropMetrics.maxOffsetY}
+                step="1"
+                value={avatarCropY}
+                onChange={(e) => setAvatarCropY(Number(e.target.value))}
+              />
+            </div>
+            <div className="memory-actions">
+              <button className="form-btn ghost" type="button" onClick={() => setAvatarCropOpen(false)}>
+                取消
+              </button>
+              <button className="form-btn" type="button" onClick={handleConfirmAvatarCrop}>
+                确认
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {memoryMenuIndex != null && showMemoryRename && (
         <div
           className="modal-backdrop"
