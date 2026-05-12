@@ -46,14 +46,26 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
     "Helvetica Neue", Arial, "PingFang SC", "Noto Sans CJK SC", system-ui,
     sans-serif;
-  font-size: 20px;
+  font-size: var(--ui-font-body);
   overflow-y: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
   color: #111827;
 }
 
-/* Runtime font controls */
+/* Font system: default body size + 3 explicit groups (chat/navbar/small) */
+.ChatPage,
+.tools-shell,
+.page-shell {
+  font-size: var(--ui-font-body);
+}
+
+.ChatPage :where(*),
+.tools-shell :where(*),
+.page-shell :where(*) {
+  font-size: inherit !important;
+}
+
 .msg-markdown,
 .msg-raw,
 .custom-input,
@@ -74,27 +86,6 @@ body {
   font-size: var(--ui-font-small) !important;
 }
 
-.ChatPage .btn,
-.ChatPage .dropdown-content,
-.tools-shell,
-.tools-shell .page-card,
-.tools-shell .page-card-title,
-.tools-shell .page-card-desc,
-.tools-shell .form-label,
-.tools-shell .form-input,
-.tools-shell .form-textarea,
-.tools-shell .form-btn,
-.tools-shell .form-hint,
-.tools-shell .form-error,
-.tools-shell .memory-text,
-.tools-shell .session-title,
-.tools-shell .log-line,
-.tools-shell .log-pre,
-.tools-shell .tab,
-.session-title {
-  font-size: var(--ui-font-body) !important;
-}
-
 .page-shell {
   color: #111827;
 }
@@ -107,12 +98,16 @@ body {
 
 /* Tools page light containers */
 .tools-shell .page-card,
-.tools-shell .form-row,
 .tools-shell .memory-item,
 .tools-shell .log-item {
   background: #ffffff;
   color: #111827;
   border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.tools-shell .form-row {
+  background: transparent;
+  border: 0;
 }
 
 .tools-shell .form-label,
@@ -135,7 +130,6 @@ body {
 }
 
 .tools-shell .memory-time {
-  font-size: 14px;
   color: #6b7280;
   margin-top: 4px;
 }
@@ -144,6 +138,13 @@ body {
   background: #ffffff;
   color: #111827;
   border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.setting-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .tools-shell .token-row,
@@ -492,6 +493,11 @@ body {
   pointer-events: auto;
 }
 
+.composer-icons-row .model-picker-dropdown,
+.composer-icons-row .model-picker-dropdown * {
+  pointer-events: auto;
+}
+
 .composer-inline-icon:hover {
   background: rgba(15, 23, 42, 0.08);
   color: #111827;
@@ -548,8 +554,10 @@ body {
 
 .chat-model-sub {
   font-size: 14px;
+  font-weight: 400;
   opacity: 0.7;
-  margin-top: 2px;
+  margin-top: 5px;
+  transform: translateY(4px);
 }
 
 .chat-model-sub-btn {
@@ -566,6 +574,11 @@ body {
 
 .chat-model-caret {
   opacity: 0.7;
+}
+
+.model-picker-dropdown .menu li > button {
+  font-weight: 400 !important;
+  color: #111827;
 }
 
 .custom-navbar-center {
@@ -1598,13 +1611,16 @@ pre.tool-card-body {
   z-index: 960;
   position: relative;
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.12);
+  width: min(620px, 96vw);
+  max-height: 86vh;
+  padding: 10px;
 }
 
 .rename-content {
-  width: min(360px, 90%);
+  width: 100%;
   display: grid;
-  gap: 12px;
-  justify-items: center;
+  gap: 8px;
+  justify-items: stretch;
 }
 
 .rename-title {
@@ -1612,6 +1628,8 @@ pre.tool-card-body {
   font-weight: 600;
   text-align: center;
   color: #111827;
+  line-height: 1.2;
+  margin-top: 2px;
 }
 
 .rename-input {
@@ -1620,6 +1638,9 @@ pre.tool-card-body {
   border: 1px solid #e5e7eb;
   background: #ffffff;
   color: #111827;
+  min-height: 58px;
+  padding: 10px 12px;
+  font-size: 1em;
 }
 
 .rename-textarea {
@@ -1629,8 +1650,17 @@ pre.tool-card-body {
   background: #ffffff;
   color: #111827;
   padding: 10px 12px;
-  resize: vertical;
-  min-height: 110px;
+  resize: none;
+  min-height: 180px;
+  max-height: 62vh;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.rename-textarea::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .rename-textarea:focus,
@@ -1642,7 +1672,7 @@ pre.tool-card-body {
 
 .rename-content-edit {
   position: relative;
-  padding-top: 8px;
+  padding-top: 2px;
 }
 
 .avatar-crop-modal {
@@ -1678,15 +1708,15 @@ pre.tool-card-body {
 
 .modal-corner-btn {
   position: absolute;
-  top: 6px;
+  top: 2px;
 }
 
 .modal-corner-left {
-  left: 8px;
+  left: 2px;
 }
 
 .modal-corner-right {
-  right: 8px;
+  right: 2px;
 }
 
 .rename-modal {
@@ -1695,6 +1725,8 @@ pre.tool-card-body {
 
 .rename-modal .btn {
   border-radius: 16px;
+  border: 0 !important;
+  font-weight: 400 !important;
 }
 
 .modal-title {
@@ -2008,6 +2040,45 @@ select.form-input {
   padding-bottom: 86px;
 }
 
+.provider-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.provider-model-name {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Keep +/- on the same line at far right in model picker modal */
+.rename-modal .memory-list .memory-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.rename-modal .memory-list .memory-item .memory-text {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.danger-icon-btn {
+  color: #dc2626;
+}
+
+.danger-icon-btn:hover {
+  color: #b91c1c;
+}
+
 .memory-text {
   font-size: 20px;
   color: rgba(220, 223, 230, 0.95);
@@ -2217,6 +2288,7 @@ select.form-input {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  overflow: visible;
 }
 
 .action-bar {
@@ -2273,6 +2345,29 @@ select.form-input {
 
 .action-icon-btn + .action-icon-btn {
   border-radius: 999px;
+}
+
+.message-action-dropdown {
+  width: 172px;
+  top: calc(100% - 35px);
+  bottom: auto;
+  transform: none;
+}
+
+.message-action-dropdown.is-assistant {
+  left: calc(100% + 6px);
+  right: auto;
+}
+
+.message-action-dropdown.is-user {
+  right: calc(100% + 6px);
+  left: auto;
+}
+
+/* For the last bubble, anchor menu by button end vertically to avoid overflow */
+.message-action-dropdown.is-last {
+  top: auto;
+  bottom: calc(100% - 24px);
 }
 
 .action-icon-btn + .action-icon-btn::before {

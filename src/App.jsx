@@ -17,7 +17,9 @@ import {
   Wrench,
   BookHeart,
   FileClock,
-  Bot,
+  Plus,
+  Minus,
+  Brain,
   Earth,
   Sparkles
 } from "lucide-react";
@@ -301,6 +303,14 @@ const fetchMessagesRows = async () => {
   return { data, error };
 };
 
+const isMissingTableError = (error, tableName) => {
+  const msg = String(error?.message || "").toLowerCase();
+  return (
+    msg.includes("does not exist") &&
+    msg.includes(String(tableName || "").toLowerCase())
+  );
+};
+
 const fetchSessionsFromSupabase = async () => {
   if (!supabase) return [];
   const { data: sessionRows, error: sessionError } = await fetchSessionsRows();
@@ -311,7 +321,9 @@ const fetchSessionsFromSupabase = async () => {
   const { data: msgRows, error: msgError } = await fetchMessagesRows();
   const hasMessageTable = !msgError;
   if (msgError) {
-    console.warn("supabase load chat_messages failed, fallback to legacy data", msgError);
+    if (!isMissingTableError(msgError, "chat_messages")) {
+      console.warn("supabase load chat_messages failed", msgError);
+    }
   }
 
   const messagesBySession = new Map();
@@ -388,24 +400,60 @@ const syncSessionsToSupabase = async (sessions) => {
   }
 
   const sessionIds = list.map((s) => String(s.id));
-  const { error: deleteMsgError } = await supabase
-    .from("chat_messages")
-    .delete()
-    .in("session_id", sessionIds);
-  if (
-    deleteMsgError &&
-    !String(deleteMsgError.message || "").includes("chat_messages")
-  ) {
-    console.warn("supabase clear chat_messages failed", deleteMsgError);
-  }
-
   const messagePayload = list.flatMap((s) => mapMessagesForDb(s));
   if (!messagePayload.length) return;
-  const { error: messageError } = await supabase
+
+  const { data: existingRows, error: existingError } = await supabase
     .from("chat_messages")
-    .upsert(messagePayload, { onConflict: "id" });
-  if (messageError) {
-    console.warn("supabase sync chat_messages failed", messageError);
+    .select("id,session_id,role,content,model,timestamp,seq")
+    .in("session_id", sessionIds);
+
+  if (existingError) {
+    if (!isMissingTableError(existingError, "chat_messages")) {
+      console.warn("supabase load existing chat_messages failed", existingError);
+    }
+    return;
+  }
+
+  const existingById = new Map(
+    (existingRows || []).map((row) => [String(row.id), row])
+  );
+  const desiredIdSet = new Set(messagePayload.map((m) => String(m.id)));
+
+  const toUpsert = messagePayload.filter((m) => {
+    const prev = existingById.get(String(m.id));
+    if (!prev) return true;
+    return (
+      String(prev.session_id || "") !== String(m.session_id || "") ||
+      String(prev.role || "") !== String(m.role || "") ||
+      String(prev.content || "") !== String(m.content || "") ||
+      String(prev.model || "") !== String(m.model || "") ||
+      String(prev.timestamp || "") !== String(m.timestamp || "") ||
+      Number(prev.seq ?? -1) !== Number(m.seq ?? -1)
+    );
+  });
+
+  const toDeleteIds = (existingRows || [])
+    .map((row) => String(row.id || ""))
+    .filter((id) => id && !desiredIdSet.has(id));
+
+  if (toUpsert.length > 0) {
+    const { error: messageError } = await supabase
+      .from("chat_messages")
+      .upsert(toUpsert, { onConflict: "id" });
+    if (messageError) {
+      console.warn("supabase sync chat_messages failed", messageError);
+    }
+  }
+
+  if (toDeleteIds.length > 0) {
+    const { error: deleteError } = await supabase
+      .from("chat_messages")
+      .delete()
+      .in("id", toDeleteIds);
+    if (deleteError && !isMissingTableError(deleteError, "chat_messages")) {
+      console.warn("supabase delete stale chat_messages failed", deleteError);
+    }
   }
 };
 
@@ -415,10 +463,7 @@ const deleteSessionFromSupabase = async (sessionId) => {
     .from("chat_messages")
     .delete()
     .eq("session_id", String(sessionId));
-  if (
-    msgError &&
-    !String(msgError.message || "").includes("chat_messages")
-  ) {
+  if (msgError && !isMissingTableError(msgError, "chat_messages")) {
     console.warn("supabase delete session messages failed", msgError);
   }
   const { error } = await supabase
@@ -1216,6 +1261,7 @@ function ChatPage() {
   const [inputValue, setInputValue] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
+  const editTextareaRef = useRef(null);
   const [editSheetOpen, setEditSheetOpen] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState(null);
   const [actionOpenId, setActionOpenId] = useState(null);
@@ -1232,6 +1278,14 @@ function ChatPage() {
   const suppressSaveRef = useRef(false);
   const atBottomRef = useRef(true);
   const suppressAutoScrollRef = useRef(false);
+  useEffect(() => {
+    if (!editSheetOpen) return;
+    const el = editTextareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const max = Math.floor(window.innerHeight * 0.62);
+    el.style.height = `${Math.max(96, Math.min(el.scrollHeight, max))}px`;
+  }, [editSheetOpen, editingText]);
   const isAutoDraftSession = (session) =>
     !!session &&
     (session.title || "新对话") === "新对话" &&
@@ -1657,6 +1711,7 @@ function ChatPage() {
         }, 1200);
       }
       navigator.clipboard?.writeText(text).catch(() => {});
+      showToast("已成功复制到剪贴板");
       return;
     }
     if (action === "delete") {
@@ -2768,7 +2823,7 @@ function ChatPage() {
     return merged;
   };
 
-  const renderMessageContent = (message) => {
+  const renderMessageContent = (message, isLastInList = false) => {
     const { content, position, createdAt, tokens } = message;
     const rawText = content?.text || "";
     const extracted = extractThinkAndTools(rawText);
@@ -3021,55 +3076,44 @@ function ChatPage() {
               <MoreHorizontal className="h-4 w-4" />
             </button>
             {actionOpenId === message._id && (
-              <div
-                className="action-bar"
+              <ul
+                className={`menu dropdown-content session-dropdown message-action-dropdown ${
+                  position === "right" ? "is-user" : "is-assistant"
+                } ${isLastInList ? "is-last" : ""}`}
                 onClick={(e) => e.stopPropagation()}
                 onMouseDown={(e) => e.stopPropagation()}
               >
-                <button
-                  className="action-icon-btn"
-                  type="button"
-                  onPointerDown={() => {
-                    const id = message?._id || null;
-                    if (!id) return;
-                    setCopiedId(id);
-                    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-                    copyTimerRef.current = setTimeout(() => {
-                      setCopiedId(null);
-                    }, 1200);
-                  }}
-                  onClick={() => handleAction(message, "copy")}
-                >
-                  {copiedId === message._id ? (
-                    <Check className="h-4 w-4" />
-                  ) : (
-                    <Copy className="h-4 w-4" />
-                  )}
-                </button>
-                {position !== "right" && (
-                  <button
-                    className="action-icon-btn"
-                    type="button"
-                    onClick={() => handleAction(message, "refresh")}
-                  >
-                    <RefreshCw className="h-4 w-4" />
+                <li>
+                  <button type="button" onClick={() => handleAction(message, "copy")}>
+                    {copiedId === message._id ? (
+                      <Check className="h-4 w-4" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                    <span className="session-menu-text">复制</span>
                   </button>
+                </li>
+                {position !== "right" && (
+                  <li>
+                    <button type="button" onClick={() => handleAction(message, "refresh")}>
+                      <RefreshCw className="h-4 w-4" />
+                      <span className="session-menu-text">重新生成</span>
+                    </button>
+                  </li>
                 )}
-                <button
-                  className="action-icon-btn"
-                  type="button"
-                  onClick={() => handleAction(message, "edit")}
-                >
-                  <SquarePen className="h-4 w-4" />
-                </button>
-                <button
-                  className="action-icon-btn"
-                  type="button"
-                  onClick={() => handleAction(message, "delete")}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
+                <li>
+                  <button type="button" onClick={() => handleAction(message, "edit")}>
+                    <SquarePen className="h-4 w-4" />
+                    <span className="session-menu-text">编辑</span>
+                  </button>
+                </li>
+                <li>
+                  <button type="button" onClick={() => handleAction(message, "delete")}>
+                    <Trash2 className="h-4 w-4" />
+                    <span className="session-menu-text">删除</span>
+                  </button>
+                </li>
+              </ul>
             )}
           </div>
           {position !== "right" && variantCount > 1 && (
@@ -3200,8 +3244,10 @@ function ChatPage() {
       </div>
       <div className="MessageContainer">
         <div className="MessageList">
-          {displayMessages.map((m) => (
-            <div key={m._id}>{renderMessageContent(m)}</div>
+          {displayMessages.map((m, idx) => (
+            <div key={m._id}>
+              {renderMessageContent(m, idx === displayMessages.length - 1)}
+            </div>
           ))}
         </div>
       </div>
@@ -3236,7 +3282,7 @@ function ChatPage() {
                     setModelMenuOpen((v) => !v);
                   }}
                 >
-                  <Bot className="h-5 w-5" />
+                  <Brain className="h-5 w-5" />
                 </button>
                 {modelMenuOpen && (
                   <ul
@@ -3256,7 +3302,9 @@ function ChatPage() {
                             <li key={modelKeyOf(m)}>
                               <button
                                 type="button"
-                                className={chatModelId === modelKeyOf(m) ? "active" : ""}
+                                className={`btn btn-ghost btn-sm justify-start w-full ${
+                                  chatModelId === modelKeyOf(m) ? "active" : ""
+                                }`}
                                 onClick={() => {
                                   const nextValue = modelKeyOf(m);
                                   setChatModelId(nextValue);
@@ -3317,6 +3365,7 @@ function ChatPage() {
           <ChevronsDown className="h-5 w-5" />
         </button>
       )}
+      {toast && <div className="toast">{toast}</div>}
       {editSheetOpen && (
         <div
           className="modal-backdrop"
@@ -3328,7 +3377,7 @@ function ChatPage() {
           <div className="app-modal rename-modal" onClick={(e) => e.stopPropagation()}>
             <div className="rename-content rename-content-edit">
               <button
-                className="btn btn-outline btn-sm modal-corner-btn modal-corner-left"
+                className="btn btn-ghost btn-sm modal-corner-btn modal-corner-left"
                 type="button"
                 onClick={() => {
                   setEditSheetOpen(false);
@@ -3338,7 +3387,7 @@ function ChatPage() {
                 取消
               </button>
               <button
-                className="btn btn-outline btn-sm modal-corner-btn modal-corner-right"
+                className="btn btn-ghost btn-sm modal-corner-btn modal-corner-right"
                 type="button"
                 onClick={() => {
                   const nextText = sanitizeText(editingText);
@@ -3436,10 +3485,11 @@ function ChatPage() {
               </button>
               <div className="rename-title">编辑消息</div>
               <textarea
+                ref={editTextareaRef}
                 className="rename-textarea"
                 value={editingText}
                 onChange={(event) => setEditingText(event.target.value)}
-                rows={4}
+                rows={2}
               />
             </div>
           </div>
@@ -3513,7 +3563,7 @@ function ToolsPage() {
     }
   });
   const [modelId, setModelId] = useState(() => readSetting("api_model"));
-  const [modelCandidate, setModelCandidate] = useState("");
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [temperature, setTemperature] = useState(() => readSetting("opt_temperature"));
   const [topP, setTopP] = useState(() => readSetting("opt_top_p"));
   const [maxTokens, setMaxTokens] = useState(() => readSetting("opt_max_tokens"));
@@ -3527,8 +3577,8 @@ function ToolsPage() {
   );
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelError, setModelError] = useState("");
-  const [saved, setSaved] = useState(false);
-  const [apiSavedHint, setApiSavedHint] = useState("");
+  const [toolsToast, setToolsToast] = useState("");
+  const toolsToastTimerRef = useRef(null);
   const [tab, setTab] = useState("api");
   const [logs, setLogs] = useState(() => readLogs());
   const [requestLogs, setRequestLogs] = useState(() => readRequestLogs());
@@ -3573,7 +3623,6 @@ function ToolsPage() {
   const [memoryDraft, setMemoryDraft] = useState("");
   const [editingMemoryIndex, setEditingMemoryIndex] = useState(null);
   const [editingMemoryText, setEditingMemoryText] = useState("");
-  const [memorySyncText, setMemorySyncText] = useState("");
   const [avatarCropOpen, setAvatarCropOpen] = useState(false);
   const [avatarCropSrc, setAvatarCropSrc] = useState("");
   const [avatarCropTarget, setAvatarCropTarget] = useState("assistant");
@@ -3610,6 +3659,17 @@ function ToolsPage() {
   const [deleteMemoryIndex, setDeleteMemoryIndex] = useState(null);
   const memoryPressTimerRef = useRef(null);
   const providerIdRef = useRef(providerId);
+  const showToolsToast = (text) => {
+    setToolsToast(text);
+    if (toolsToastTimerRef.current) clearTimeout(toolsToastTimerRef.current);
+    toolsToastTimerRef.current = setTimeout(() => setToolsToast(""), 1400);
+  };
+  useEffect(
+    () => () => {
+      if (toolsToastTimerRef.current) clearTimeout(toolsToastTimerRef.current);
+    },
+    []
+  );
 
   useEffect(() => {
     providerIdRef.current = providerId;
@@ -3872,24 +3932,21 @@ function ToolsPage() {
     writeSetting("opt_added_models", JSON.stringify(normalizedModels));
     writeSetting("api_model", nextModelId);
     emitModelsUpdate();
-    setApiSavedHint("供应商已保存");
-    setTimeout(() => setApiSavedHint(""), 1200);
+    showToolsToast("供应商已保存");
   };
 
   const handleSaveMcp = () => {
     writeSetting("mcp_url", mcpUrl.trim());
     writeSetting("mcp_api_key", mcpApiKey.trim());
     writeSetting("opt_mcp_enabled", mcpEnabled ? "true" : "false");
-    setApiSavedHint("MCP 设置已保存");
-    setTimeout(() => setApiSavedHint(""), 1200);
+    showToolsToast("MCP 设置已保存");
   };
 
   const handleSaveSearch = () => {
     writeSetting("web_search_url", webSearchUrl.trim());
     writeSetting("web_search_api_key", webSearchApiKey.trim());
     writeSetting("opt_search_enabled", searchEnabled ? "true" : "false");
-    setApiSavedHint("搜索设置已保存");
-    setTimeout(() => setApiSavedHint(""), 1200);
+    showToolsToast("搜索设置已保存");
   };
 
   const handleSavePersonal = async () => {
@@ -3904,9 +3961,8 @@ function ToolsPage() {
     writeSetting("opt_system_prompt", systemPrompt.trim());
     writeSetting("opt_memory_enabled", memoryEnabled ? "true" : "false");
     writeSetting("opt_message_template", messageTemplate.trim());
-    setSaved(true);
     emitModelsUpdate();
-    setTimeout(() => setSaved(false), 1200);
+    showToolsToast("已保存");
   };
 
   const handleSaveMemories = async () => {
@@ -3915,9 +3971,7 @@ function ToolsPage() {
     setMemoryMenuIndex(null);
     setShowMemoryRename(false);
     setDeleteMemoryIndex(null);
-    setMemorySyncText(`已保存到云端（${syncedMemories.length} 条）`);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1200);
+    showToolsToast(`已保存到云端（${syncedMemories.length} 条）`);
   };
 
   const handleMemoryRename = () => {
@@ -4084,9 +4138,7 @@ function ToolsPage() {
         data?.models?.map((m) => (m.name ? m.name.replace(/^models\//, "") : m.id)).filter(Boolean) ??
         [];
       setModels(list);
-      if (list.length) {
-        setModelCandidate(list[0]);
-      }
+      setModelPickerOpen(true);
     } catch (err) {
       setModelError(err.message || String(err));
     } finally {
@@ -4094,13 +4146,13 @@ function ToolsPage() {
     }
   };
 
-  const handleAddModel = () => {
-    if (!modelCandidate) return;
+  const handleAddModel = (modelName) => {
+    if (!modelName) return;
     if (!providerId) {
       setModelError("请先选择或创建 API 供应商");
       return;
     }
-    const nextItem = { providerId, id: modelCandidate };
+    const nextItem = { providerId, id: modelName };
     const exists = addedModels.some((m) => modelKeyOf(m) === modelKeyOf(nextItem));
     if (exists) return;
     const next = [nextItem, ...addedModels];
@@ -4122,6 +4174,35 @@ function ToolsPage() {
       writeSetting("api_model", fallback);
     }
     emitModelsUpdate();
+  };
+
+  const handleToggleFetchedModel = (modelName) => {
+    if (!modelName || !providerId) return;
+    const key = modelKeyOf({ providerId, id: modelName });
+    let nextModelId = modelId;
+    setAddedModels((prev) => {
+      const exists = prev.some((m) => modelKeyOf(m) === key);
+      const next = exists
+        ? prev.filter((m) => modelKeyOf(m) !== key)
+        : [{ providerId, id: modelName }, ...prev];
+      if (exists && modelId === key) {
+        nextModelId = next[0] ? modelKeyOf(next[0]) : "";
+        setModelId(nextModelId);
+      }
+      if (!exists && !modelId) {
+        nextModelId = key;
+        setModelId(nextModelId);
+      }
+      // Persist asynchronously so icon switch feels instant.
+      setTimeout(() => {
+        writeSetting("opt_added_models", JSON.stringify(next));
+        if (nextModelId !== modelId) {
+          writeSetting("api_model", nextModelId);
+        }
+        emitModelsUpdate();
+      }, 0);
+      return next;
+    });
   };
 
   const handleAddProvider = () => {
@@ -4184,8 +4265,7 @@ function ToolsPage() {
     writeSetting("api_model", nextModelId);
     emitModelsUpdate();
 
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1200);
+    showToolsToast("供应商已删除");
   };
 
   return (
@@ -4375,7 +4455,6 @@ function ToolsPage() {
                     保存搜索设置
                   </button>
                 )}
-                {apiSavedHint && <div className="form-hint">{apiSavedHint}</div>}
               </>
             ) : (
               <div className="page-card provider-detail-card">
@@ -4400,6 +4479,17 @@ function ToolsPage() {
                   />
                 </div>
                 <div className="form-row">
+                  <div className="form-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>是否启用</span>
+                    <input
+                      type="checkbox"
+                      className="toggle"
+                      checked={providerEnabled}
+                      onChange={(e) => setProviderEnabled(e.target.checked)}
+                    />
+                  </div>
+                </div>
+                <div className="form-row">
                   <label className="form-label" htmlFor="apiUrl">API URL</label>
                   <input
                     id="apiUrl"
@@ -4419,63 +4509,28 @@ function ToolsPage() {
                     onChange={(e) => setApiKey(e.target.value)}
                   />
                 </div>
-                <div className="form-row">
-                  <div className="form-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span>是否启用</span>
-                    <input
-                      type="checkbox"
-                      className="toggle"
-                      checked={providerEnabled}
-                      onChange={(e) => setProviderEnabled(e.target.checked)}
-                    />
-                  </div>
-                </div>
                 {providerDirty && (
                   <button className="form-btn" type="button" onClick={handleSaveProvider}>
                     保存供应商
                   </button>
                 )}
-                {apiSavedHint && <div className="form-hint">{apiSavedHint}</div>}
                 {modelError && <div className="form-error">{modelError}</div>}
-                {models.length > 0 && (
-                  <div className="form-row">
-                    <label className="form-label" htmlFor="modelCandidate">
-                      从已拉取模型中添加
-                    </label>
-                    <select
-                      id="modelCandidate"
-                      className="form-input"
-                      value={modelCandidate}
-                      onChange={(e) => setModelCandidate(e.target.value)}
-                    >
-                      {models.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                    <button className="form-btn" type="button" onClick={handleAddModel}>
-                      添加到已添加模型
-                    </button>
-                  </div>
-                )}
                 <div className="form-row">
                   <label className="form-label">当前供应商已添加模型</label>
                   <div className="memory-list">
                     {addedModels
                       .filter((m) => m.providerId === providerId)
                       .map((m) => (
-                        <div className="memory-item" key={modelKeyOf(m)}>
-                          <div className="memory-text">{m.id}</div>
-                          <div className="memory-actions">
-                            <button
-                              className="form-btn ghost"
-                              type="button"
-                              onClick={() => handleRemoveModel(modelKeyOf(m))}
-                            >
-                              删除
-                            </button>
-                          </div>
+                        <div className="memory-item provider-model-row" key={modelKeyOf(m)}>
+                          <div className="memory-text provider-model-name">{m.id}</div>
+                          <button
+                            className="btn btn-ghost btn-circle btn-sm danger-icon-btn"
+                            type="button"
+                            onClick={() => handleRemoveModel(modelKeyOf(m))}
+                            aria-label="删除模型"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         </div>
                       ))}
                     {addedModels.filter((m) => m.providerId === providerId).length === 0 && (
@@ -4484,13 +4539,54 @@ function ToolsPage() {
                   </div>
                 </div>
                 <div className="provider-detail-fab">
-                  <button className="btn btn-outline" type="button" onClick={handleDeleteProvider}>
+                  <button className="btn" type="button" onClick={handleDeleteProvider}>
                     删除供应商
                   </button>
                   <button className="btn" type="button" onClick={handleFetchModels}>
                     {loadingModels ? "加载中..." : "拉取模型"}
                   </button>
                 </div>
+                {modelPickerOpen && (
+                  <div
+                    className="modal-backdrop"
+                    onClick={() => setModelPickerOpen(false)}
+                  >
+                    <div className="app-modal rename-modal" onClick={(e) => e.stopPropagation()}>
+                      <div className="rename-content rename-content-edit">
+                        <button
+                          className="btn btn-ghost btn-sm modal-corner-btn modal-corner-left"
+                          type="button"
+                          onClick={() => setModelPickerOpen(false)}
+                        >
+                          取消
+                        </button>
+                        <div className="rename-title">选择要添加的模型</div>
+                        <div className="memory-list" style={{ maxHeight: "52vh", overflowY: "auto", width: "100%" }}>
+                          {models.length === 0 && (
+                            <div className="page-card-desc">没有拉取到模型</div>
+                          )}
+                          {models.map((name) => {
+                            const key = modelKeyOf({ providerId, id: name });
+                            const selected = addedModels.some((m) => modelKeyOf(m) === key);
+                            return (
+                              <div className="memory-item" key={name}>
+                                <div className="memory-text provider-model-name">{name}</div>
+                                <button
+                                  className="btn btn-ghost btn-circle btn-sm"
+                                  type="button"
+                                  onClick={() => handleToggleFetchedModel(name)}
+                                  aria-label={selected ? "取消添加模型" : "添加模型"}
+                                >
+                                  {selected ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </>
@@ -4634,14 +4730,15 @@ function ToolsPage() {
             </div>
             <div className="form-row">
               <label className="form-label">记忆库</label>
-              <label className="form-toggle">
+              <div className="setting-toggle-row">
+                <span className="form-label">启用记忆</span>
                 <input
                   type="checkbox"
+                  className="toggle"
                   checked={memoryEnabled}
                   onChange={(e) => setMemoryEnabled(e.target.checked)}
                 />
-                <span>启用记忆</span>
-              </label>
+              </div>
               <div className="memory-list">
                 {memoryList.length === 0 && (
                   <div className="page-card-desc">暂无记忆</div>
@@ -4747,7 +4844,6 @@ function ToolsPage() {
                   保存记忆到云端
                 </button>
               </div>
-              {memorySyncText && <div className="form-hint">{memorySyncText}</div>}
             </div>
             <div className="form-row">
               <label className="form-label" htmlFor="messageTemplate">
@@ -4889,7 +4985,6 @@ function ToolsPage() {
             <button className="form-btn" type="button" onClick={handleSavePersonal}>
               保存
             </button>
-            {saved && <div className="form-hint">已保存</div>}
           </div>
         )}
         </div>
@@ -4981,6 +5076,7 @@ function ToolsPage() {
         </div>
         </div>
       </div>
+      {toolsToast && <div className="toast">{toolsToast}</div>}
       {avatarCropOpen && (
         <div
           className="modal-backdrop"
@@ -5549,7 +5645,24 @@ function SessionsPage() {
           }}
         >
           <div className="app-modal rename-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="rename-content">
+            <div className="rename-content rename-content-edit">
+              <button
+                className="btn btn-ghost btn-sm modal-corner-btn modal-corner-left"
+                type="button"
+                onClick={() => {
+                  setShowRename(false);
+                  setMenuSessionId(null);
+                }}
+              >
+                取消
+              </button>
+              <button
+                className="btn btn-ghost btn-sm modal-corner-btn modal-corner-right"
+                type="button"
+                onClick={handleRename}
+              >
+                确认
+              </button>
               <div className="rename-title">重命名聊天</div>
               <input
                 type="text"
@@ -5558,25 +5671,6 @@ function SessionsPage() {
                 value={renameValue}
                 onChange={(e) => setRenameValue(e.target.value)}
               />
-              <div className="modal-actions">
-                <button
-                  className="btn btn-outline btn-sm"
-                  type="button"
-                  onClick={() => {
-                    setShowRename(false);
-                    setMenuSessionId(null);
-                  }}
-                >
-                  取消
-                </button>
-                <button
-                  className="btn btn-outline btn-sm"
-                  type="button"
-                  onClick={handleRename}
-                >
-                  确认
-                </button>
-              </div>
             </div>
           </div>
         </div>
